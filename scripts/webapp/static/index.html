@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Eyelid HITL Annotation</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/konva@9/konva.min.js"></script>
+</head>
+<body>
+  <!-- Setup overlay -->
+  <div id="setup" class="overlay">
+    <div class="panel">
+      <h1>HITL アノテーション実験（盲検）</h1>
+      <label>アノテータ
+        <select id="annotator-select"></select>
+      </label>
+      <p id="phase-desc" class="muted">セッションを選んで開始します。練習 → Scratch → Session 1〜8 の順です。</p>
+      <div id="session-list"></div>
+      <p class="muted small">各セッション10枚。順番に行います（前のセッション完了で次が開きます）。間で休憩可。
+        補正対象モデルは表示されません（盲検）。</p>
+    </div>
+  </div>
+
+  <!-- Main app -->
+  <div id="app" class="hidden">
+    <header id="topbar">
+      <div class="left">
+        <span id="phase-label" class="badge"></span>
+        <span id="progress">0 / 0</span>
+        <span id="timer" class="mono">00:00</span>
+      </div>
+      <div class="right">
+        <span id="status" class="muted"></span>
+        <button id="submit-btn">提出して次へ →</button>
+        <button id="abort-btn" title="セッションを中断（記録を破棄して最初からやり直し）">中断</button>
+      </div>
+    </header>
+
+    <div id="body">
+      <!-- Left tool rail -->
+      <nav id="toolbar">
+        <button class="tool" data-tool="select" title="選択・編集 (V)">▢</button>
+        <button class="tool" data-tool="polygon" title="ポリゴン描画 (P)">⬡</button>
+        <button class="tool" data-tool="ellipse" title="楕円描画 (E)">◯</button>
+        <button class="tool" data-tool="pan" title="移動 (space)">✋</button>
+        <hr />
+        <button id="undo" title="元に戻す (Ctrl+Z)">↶</button>
+        <button id="redo" title="やり直し (Ctrl+Y)">↷</button>
+        <button id="delete" title="選択図形を削除 (Del)">🗑</button>
+        <button id="fit" title="全体表示 (F)">⤢</button>
+        <button id="maximize" title="ウィンドウいっぱいに最大化（画像で画面を埋める）">⛶</button>
+        <button id="fill" title="塗りつぶし表示の切替">🎨</button>
+      </nav>
+
+      <!-- Canvas -->
+      <main id="canvas-wrap"><div id="canvas"></div>
+        <div id="hint" class="hint"></div>
+        <div id="loading-overlay" class="hidden">推論中…</div>
+      </main>
+
+      <!-- Right sidebar -->
+      <aside id="sidebar">
+        <h2>クラス</h2>
+        <ul id="class-list"></ul>
+        <div id="image-adjust">
+          <label>明るさ <span id="brightness-val" class="mono small">0</span>
+            <input type="range" id="brightness" min="-100" max="100" value="0" /></label>
+          <label>コントラスト <span id="contrast-val" class="mono small">0</span>
+            <input type="range" id="contrast" min="-100" max="100" value="0" /></label>
+          <button id="reset-adjust" class="small">明るさ/コントラストをリセット</button>
+        </div>
+        <h2>計測 (現在の画像)</h2>
+        <table id="metrics-table" class="mono small"></table>
+        <p class="muted small" id="hitl-note"></p>
+      </aside>
+    </div>
+  </div>
+
+  <script src="/js/metrics.js"></script>
+  <script src="/js/canvas.js"></script>
+  <script src="/js/tools.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>

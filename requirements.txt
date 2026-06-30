@@ -1,0 +1,9 @@
+# Backend (Python). torch/transformers are only needed for HITL phases.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.6
+numpy>=1.24
+opencv-python>=4.8
+# Model inference (already present in the comparison env):
+torch
+transformers>=4.38

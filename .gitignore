@@ -1,0 +1,27 @@
+# --- Python ---
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# --- Claude local ---
+.claude/settings.local.json
+.claude/hooks/record.log
+
+# --- Input data (patient images live outside the repo; never commit) ---
+data/
+
+# --- Patient-identifying data (filenames embed patient IDs) -> DO NOT push ---
+scripts/webapp/config/experiment.json
+outputs/training_subsets/
+outputs/results/
+
+# --- Large model checkpoints (419MB, patient-derived) -> distribute separately ---
+outputs/models/*.pth
+
+# --- Junk / accidental files ---
+*Eyelid_HITL_experiment_seg.txt
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
