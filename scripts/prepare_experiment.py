@@ -11,6 +11,11 @@ a clean baseline before any model exposure); sessions 1..8 = the 8 HITL blocks'
 10 (shuffled slot order). A separate ~5-image practice set (3 frontal + 2
 peripheral, disjoint from the 90 and from training) warms up tool familiarity
 (GT revealed after each practice submission; excluded from analysis).
+Two trailing repeat sessions measure reproducibility / order effects: a blind
+HITL repeat ("Session 9", 10 already-seen HITL images, same hidden model) and a
+final "Scratch (2回目)" that re-presents the 10 session-0 scratch images so the
+scratch baseline is also measured AFTER tool familiarity (pre/post learning
+effect on the same images; scratch is unblinded so its label is explicit).
 
 Gaze is auto-classified by de-baselined iris eccentricity (see iris_offset).
 patient_id = filename prefix before first '-'. Test pool = patients whose min
@@ -40,7 +45,20 @@ N_BLOCKS = 9          # = number of conditions
 N_PER_SESSION = 10
 N_FRONTAL = 7         # frontal images per block / per session
 N_PERIPHERAL = 3      # peripheral images per block / per session
-N_ANNOTATORS = 3
+# real annotator identities; order = Latin-square rows. A "test"/practice
+# pseudo-annotator is added by the backend and shown first in the UI.
+ANNOTATOR_NAMES = ["kubota", "maeda", "kaisho"]
+N_ANNOTATORS = len(ANNOTATOR_NAMES)
+# Test-retest: re-present a FULL gaze-balanced session (same 10 = 7F+3P size as
+# the others, so it is indistinguishable from a normal blind session) of
+# already-seen HITL images (same hidden model) as the final session, to measure
+# intra-annotator reproducibility (ICC / pairwise Dice). Tagged is_repeat
+# server-side; the annotator is not told.
+N_REPEAT = N_PER_SESSION
+# Final scratch repeat: the SAME 10 session-0 images, drawn from scratch again
+# after all HITL sessions (order-effect / learning estimate on paired images).
+SCRATCH_REPEAT_KEY = "scratch_repeat"
+SCRATCH_REPEAT_LABEL = "Scratch（2回目）"
 # Practice = two short warm-up sessions covering BOTH workflows: draw-from-scratch
 # THEN correct-a-prefill. Each has 2 frontal + 1 peripheral (peripheral exercises
 # the iris/pupil ellipse tilt). GT is revealed after each practice submission.
@@ -193,7 +211,7 @@ def main() -> None:
 
     runs: dict[str, dict] = {}
     for ai in range(N_ANNOTATORS):
-        annot = str(ai + 1)
+        annot = ANNOTATOR_NAMES[ai]
         block_cond = {f"B{j}": L[ai][j] for j in range(N_BLOCKS)}
 
         # scratch session = the block this annotator maps to condition 0
@@ -229,6 +247,24 @@ def main() -> None:
         sessions = [sess(scratch_imgs, 0, "scratch", False, "Scratch")]
         for s, sitems in enumerate(hitl_sessions):
             sessions.append(sess(sitems, s + 1, f"hitl_{s + 1}", True, f"Session {s + 1}"))
+        # test-retest: re-present a full gaze-balanced session (7F+3P) of
+        # already-seen HITL images (identical hidden condition/model, so the
+        # prefill is reproduced) as the final blind session tagged is_repeat. Not
+        # disclosed to the client. A dedicated RNG keeps the 90-image assignments
+        # & practice identical to before.
+        rep_rng = random.Random(SEED + 1000 + ai)
+        rep_f = [x for x in hitl if x["gaze"] == "frontal"]
+        rep_p = [x for x in hitl if x["gaze"] == "peripheral"]
+        repeat_src = rep_rng.sample(rep_f, N_FRONTAL) + rep_rng.sample(rep_p, N_PERIPHERAL)
+        rep_rng.shuffle(repeat_src)
+        repeat_imgs = [dict(im, is_repeat=True) for im in repeat_src]
+        sessions.append(sess(repeat_imgs, N_BLOCKS, "hitl_repeat", True, f"Session {N_BLOCKS}"))
+        # final scratch repeat: same 10 scratch images, reshuffled with its own
+        # RNG (main rng untouched -> all earlier assignments stay identical).
+        sr_rng = random.Random(SEED + 2000 + ai)
+        scratch2 = [dict(im, is_repeat=True) for im in scratch_imgs]
+        sr_rng.shuffle(scratch2)
+        sessions.append(sess(scratch2, N_BLOCKS + 1, SCRATCH_REPEAT_KEY, False, SCRATCH_REPEAT_LABEL))
         runs[annot] = {"sessions": sessions}
 
     # practice: two short warm-up sessions (disjoint from the 90 study images & training)
@@ -258,7 +294,7 @@ def main() -> None:
         "n_frontal": N_FRONTAL, "n_peripheral": N_PERIPHERAL, "ecc_threshold": ECC_THRESHOLD,
         "gaze_baseline": {"ex": round(mex, 4), "ey": round(mey, 4)},
         "conditions": conditions, "blocks": blocks, "latin_square": L,
-        "annotators": [str(i + 1) for i in range(N_ANNOTATORS)],
+        "annotators": list(ANNOTATOR_NAMES),
         "runs": runs, "practice": practice, "models": MODELS,
         # legacy fallback (debug only)
         "phases": legacy_phases, "assignments": legacy_assign, "n_per_phase": N_PER_SESSION,
@@ -316,12 +352,22 @@ def _audit_and_assert(exp, pool, study, practice_imgs):
     # per-annotator runs
     for annot, run in runs.items():
         sessions = run["sessions"]
-        assert len(sessions) == N_BLOCKS
+        # the trailing repeat sessions are audited separately (already-seen images)
+        repeat = [s for s in sessions if any(i.get("is_repeat") for i in s["items"])]
+        real = [s for s in sessions if s not in repeat]
+        assert len(real) == N_BLOCKS
+        hitl_rep = [s for s in repeat if s["is_hitl"]]
+        scr_rep = [s for s in repeat if not s["is_hitl"]]
+        assert len(hitl_rep) == 1 and len(hitl_rep[0]["items"]) == N_REPEAT, \
+            f"annotator {annot}: expected one HITL repeat session of {N_REPEAT}"
+        assert len(scr_rep) == 1, f"annotator {annot}: expected one scratch repeat session"
+        assert [s["session_index"] for s in sessions] == list(range(len(sessions))), \
+            f"annotator {annot}: session_index not contiguous"
         s0 = sessions[0]
         assert s0["session_index"] == 0 and s0["key"] == "scratch" and not s0["is_hitl"], \
             f"annotator {annot}: scratch not session 0"
         seen_ids, conds_seen = set(), set()
-        for s in sessions:
+        for s in real:
             assert len(s["items"]) == N_PER_SESSION
             assert sum(i["gaze"] == "frontal" for i in s["items"]) == N_FRONTAL
             assert sum(i["gaze"] == "peripheral" for i in s["items"]) == N_PERIPHERAL
@@ -335,6 +381,32 @@ def _audit_and_assert(exp, pool, study, practice_imgs):
         assert seen_ids == study_ids, f"annotator {annot} image set != 90 study imgs"
         assert conds_seen == {"scratch"} | {m for m in CONDITION_MODELS if m}, \
             f"annotator {annot} missing conditions"
+        # repeat session: full gaze-balanced 10 (7F+3P), all HITL & previously seen
+        rs = hitl_rep[0]
+        assert rs["is_hitl"] and all(i.get("is_repeat") for i in rs["items"]), \
+            f"annotator {annot}: repeat session mistagged"
+        assert len(rs["items"]) == N_PER_SESSION, f"annotator {annot}: repeat not 10 imgs"
+        assert sum(i["gaze"] == "frontal" for i in rs["items"]) == N_FRONTAL, \
+            f"annotator {annot}: repeat gaze imbalance"
+        assert sum(i["gaze"] == "peripheral" for i in rs["items"]) == N_PERIPHERAL, \
+            f"annotator {annot}: repeat gaze imbalance"
+        rep_ids = {i["image_id"] for i in rs["items"]}
+        assert rep_ids <= seen_ids, f"annotator {annot}: repeat images not previously seen"
+        # scratch repeat: LAST session, unblinded scratch, exactly the session-0 images reshuffled
+        ss = scr_rep[0]
+        assert ss is sessions[-1] and ss["key"] == SCRATCH_REPEAT_KEY, \
+            f"annotator {annot}: scratch repeat must be the final session"
+        assert not ss["is_hitl"] and all(i.get("is_repeat") for i in ss["items"]), \
+            f"annotator {annot}: scratch repeat mistagged"
+        assert all(i["condition"] == "scratch" and i["model"] is None for i in ss["items"]), \
+            f"annotator {annot}: scratch repeat has a model/condition"
+        assert len(ss["items"]) == N_PER_SESSION
+        assert sum(i["gaze"] == "frontal" for i in ss["items"]) == N_FRONTAL
+        assert sum(i["gaze"] == "peripheral" for i in ss["items"]) == N_PERIPHERAL
+        s0_order = [i["image_id"] for i in s0["items"]]
+        ss_order = [i["image_id"] for i in ss["items"]]
+        assert set(ss_order) == set(s0_order), f"annotator {annot}: scratch repeat != session-0 images"
+        assert ss_order != s0_order, f"annotator {annot}: scratch repeat not reshuffled"
         # report
         order = " ".join(s["key"] for s in sessions)
         print(f"  annotator {annot}: {order}")

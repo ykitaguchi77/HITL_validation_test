@@ -11,9 +11,10 @@ from config import RESULTS_DIR, CLASSES
 _BASE_COLS = [
     "session_id", "annotator", "attempt", "timestamp",
     "session_key", "session_index", "condition", "model", "train_size", "is_hitl",
-    "is_practice", "block", "gaze", "ecc", "order_in_session",
+    "is_practice", "is_repeat", "block", "gaze", "ecc", "order_in_session",
     "phase", "image_id", "filename",
-    "duration_sec", "total_clicks", "mouse_distance_px",
+    "duration_sec", "paused_time_sec", "time_to_first_action_sec", "idle_time_sec", "effort",
+    "total_clicks", "mouse_distance_px",
     "vertices_added", "vertices_moved", "vertices_deleted",
     "shapes_created", "shapes_deleted", "undo_count", "redo_count",
     "zoom_count", "pan_count", "mean_dice", "mean_iou",
@@ -24,7 +25,8 @@ def _per_class_cols() -> list[str]:
     cols = []
     for c in CLASSES:
         k = c["key"]
-        cols += [f"{k}_dice", f"{k}_iou", f"{k}_clicks", f"{k}_time_sec",
+        cols += [f"{k}_dice", f"{k}_iou", f"{k}_hd95", f"{k}_assd", f"{k}_boundary_f1",
+                 f"{k}_clicks", f"{k}_time_sec",
                  f"{k}_vertices_edited", f"{k}_correction_dice", f"{k}_area_change",
                  f"{k}_gt_present", f"{k}_submitted_present"]
     return cols
@@ -75,6 +77,7 @@ def _flatten(record: dict) -> dict:
         "train_size": record.get("train_size"),
         "is_hitl": record.get("is_hitl"),
         "is_practice": record.get("is_practice"),
+        "is_repeat": record.get("is_repeat"),
         "block": record.get("block"),
         "gaze": record.get("gaze"),
         "ecc": record.get("ecc"),
@@ -83,6 +86,10 @@ def _flatten(record: dict) -> dict:
         "image_id": record.get("image_id"),
         "filename": record.get("filename"),
         "duration_sec": m.get("duration_sec"),
+        "paused_time_sec": m.get("paused_time_sec"),
+        "time_to_first_action_sec": m.get("time_to_first_action_sec"),
+        "idle_time_sec": m.get("idle_time_sec"),
+        "effort": record.get("effort"),
         "total_clicks": m.get("total_clicks"),
         "mouse_distance_px": m.get("mouse_distance_px"),
         "vertices_added": m.get("vertices_added"),
@@ -103,6 +110,9 @@ def _flatten(record: dict) -> dict:
         cm = pcm.get(k, {})
         row[f"{k}_dice"] = cs.get("dice")
         row[f"{k}_iou"] = cs.get("iou")
+        row[f"{k}_hd95"] = cs.get("hd95")
+        row[f"{k}_assd"] = cs.get("assd")
+        row[f"{k}_boundary_f1"] = cs.get("boundary_f1")
         row[f"{k}_clicks"] = cm.get("clicks")
         row[f"{k}_time_sec"] = cm.get("time_sec")
         row[f"{k}_vertices_edited"] = cm.get("vertices_edited")

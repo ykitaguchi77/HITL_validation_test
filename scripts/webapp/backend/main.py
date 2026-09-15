@@ -42,8 +42,8 @@ PRACTICE_BY_KEY = {p["key"]: p for p in PRACTICE}
 ANNOTATORS = EXPERIMENT.get("annotators", [])
 # "test" is a functional-test pseudo-annotator: it runs annotator 1's assignment but
 # its records save under session_id "test_..." (annotator="test"), separate from real data.
-RUN_ALIAS = {"test": (ANNOTATORS[0] if ANNOTATORS else "1")}
-UI_ANNOTATORS = list(ANNOTATORS) + ["test"]
+RUN_ALIAS = {"test": (ANNOTATORS[0] if ANNOTATORS else "kubota")}
+UI_ANNOTATORS = ["test"] + list(ANNOTATORS)   # practice/test shown first
 
 
 def _run(annotator: str):
@@ -176,10 +176,18 @@ class SubmitReq(BaseModel):
     annotation: dict
     initial: dict | None = None
     metrics: dict
+    effort: int | None = None   # Paas single-item mental-effort rating (1-9)
 
 
 class AbortReq(BaseModel):
     session_id: str
+
+
+class CheckReq(BaseModel):
+    annotator: str
+    session_key: str
+    image_id: int
+    annotation: dict
 
 
 # --- endpoints -------------------------------------------------------------
@@ -248,27 +256,45 @@ def submit(req: SubmitReq):
         "session_key": it["session_key"], "session_index": it["session_index"],
         "condition": it.get("condition"), "model": it.get("model"),
         "train_size": it.get("train_size"), "is_hitl": it.get("is_hitl"),
-        "is_practice": it.get("is_practice"),
+        "is_practice": it.get("is_practice"), "is_repeat": it.get("is_repeat", False),
         "block": it.get("block"), "gaze": it.get("gaze"), "ecc": it.get("ecc"),
         "order_in_session": it.get("order_in_session"),
         "image_id": req.image_id, "filename": e["filename"],
         "native_size": [e["width"], e["height"]],
         "annotation": req.annotation, "initial": req.initial,
+        "effort": req.effort,
         "metrics": req.metrics, "scores": scores,
     }
     save_record(req.session_id, record)
-    # practice: reveal GT + per-class Dice for calibration. Real sessions: suppress feedback.
-    if it.get("is_practice"):
-        gt = get_gt_annotation(e["filename"])
-        # merge Eyelid+Caruncle into a single outer outline (no internal boundary line)
-        eyelid_mask = rasterize_class(gt.get("eyelid", []), "polygon", e["height"], e["width"])
-        eyelid_outline = mask_to_polygon(eyelid_mask)
-        gt_out = {"eyelid": [eyelid_outline] if eyelid_outline else [],
-                  "iris": gt.get("iris", []), "pupil": gt.get("pupil", [])}
-        return {"ok": True, "is_practice": True, "gt": gt_out,
-                "scores": {k: round(v.get("dice", 0.0), 3) for k, v in scores["per_class"].items()},
-                "mean_dice": round(scores["mean_dice"], 3)}
-    return {"ok": True, "is_practice": False}
+    # GT calibration feedback for practice is shown on the confirmation screen
+    # (via /api/practice_gt) BEFORE saving, so no post-save review is needed here.
+    return {"ok": True, "is_practice": bool(it.get("is_practice"))}
+
+
+def _practice_feedback(e: dict, annotation: dict) -> dict:
+    """Merged-eyelid GT outline + per-class Dice for practice calibration."""
+    scores = score_annotation(e["filename"], annotation, e["width"], e["height"])
+    gt = get_gt_annotation(e["filename"])
+    # merge Eyelid+Caruncle into a single outer outline (no internal boundary line)
+    eyelid_mask = rasterize_class(gt.get("eyelid", []), "polygon", e["height"], e["width"])
+    eyelid_outline = mask_to_polygon(eyelid_mask)
+    gt_out = {"eyelid": [eyelid_outline] if eyelid_outline else [],
+              "iris": gt.get("iris", []), "pupil": gt.get("pupil", [])}
+    return {"gt": gt_out,
+            "scores": {k: round(v.get("dice", 0.0), 3) for k, v in scores["per_class"].items()},
+            "mean_dice": round(scores["mean_dice"], 3)}
+
+
+@app.post("/api/practice_gt")
+def practice_gt(req: CheckReq):
+    """Dry-run GT + Dice for the confirmation screen (practice only; never saves,
+    and refuses real sessions so GT is never revealed there)."""
+    it = _resolve(req.annotator, req.session_key, req.image_id)
+    if it is None:
+        raise HTTPException(404, "image not in this session")
+    if not it.get("is_practice"):
+        raise HTTPException(403, "GT is only available for practice sessions")
+    return _practice_feedback(IMG_INDEX[req.image_id], req.annotation)
 
 
 @app.post("/api/abort")

@@ -1,3 +1,18 @@
+# 実施前の設計・資料調整（2026-09-15）
+- [x] annotator_guide.md: アノテータ選択を実名（kubota/maeda/kaisho）表記へ修正、予測の直し方（修正でも削除→描き直しでも可）を明記
+- [x] 最終セッション「Scratch（2回目）」を追加（案A: セッション0と同じ10枚を専用RNGで再シャッフル・is_repeat=True・condition=scratch）
+  - `scripts/prepare_experiment.py`: SCRATCH_REPEAT_KEY/LABEL 追加・生成・audit 拡張（最終セッション/非HITL/画像集合==セッション0/順序差/連番 index）
+  - `scripts/webapp/config/experiment.json` 再生成（全 assertion PASS）。新旧 diff: blocks/practice/latin_square/models と各アノテータ sessions[0..9] は完全一致、末尾 1 セッションのみ追加
+  - backend/frontend はデータ駆動のためコード変更なし。ローカル起動で /api/run（13セッション・盲検キー非露出）・/api/session（10枚=セッション0）・/api/predict（空プレフィル）・/api/submit（summary.csv に condition=scratch/is_repeat=True/session_index=10）を実 API 検証、検証記録削除・サーバ停止
+  - `scripts/webapp/annotator_guide.md` を全13セッション構成へ更新
+- [ ] 本番前に `run_server.bat` で再起動（experiment.json は起動時ロード）
+
+## レビュー（Scratch 2回目）
+- 順序効果（scratch が常に習熟前）の補正用に、同一人物・同一画像の pre/post scratch ペア（30ペア）を得る設計。
+- 解析では末尾 scratch を保守的な基準値として用い、初回との差を順序効果として報告する方針。
+
+---
+
 # HITL アノテーション webapp 実装計画
 
 ## 決定事項（ユーザ確認済み）
@@ -58,6 +73,54 @@ outputs/results/         # セッション結果 json/csv
 - scratch phase は空で開始
 - 1枚アノテーション→提出→outputs/results/ に json/csv 出力, per-class Dice 算出を確認
 - Playwright もしくは手動で UI のズーム/パン/頂点編集が動作
+
+---
+
+# 計測項目の追加（既報調査 2026-07-11 を受けて）
+
+決定事項（ユーザ確認済み）:
+- 境界指標は **全3クラス（eyelid/iris/pupil）**、許容幅 **2px**（≤2px を一致）
+  ※当初は眼瞼のみとしたが、オフライン計算でアノテーター負担ゼロのため全クラスへ拡張。
+    虹彩/瞳孔は楕円ゆえ HD95/ASSD が有用（Boundary-F1 は固定許容幅で小構造ほど甘め）。
+- 主観負荷は **単一項目(Paas 9段階)を全画像**、submit後に取得（duration 非計上）
+- クリック/編集の **タイムスタンプ** を記録（初動時間・アイドル時間・労力vs品質曲線の土台）
+- 再現性用に **各アノテータ5枚を再掲**（同一条件で test-retest）
+
+## タスク
+- [x] 1. metrics.js: イベントのタイムスタンプ記録＋初動時間/アイドル時間の導出
+- [x] 2. scoring.py: 眼瞼の境界指標 HD95 / ASSD / Boundary-F1@2px（cv2）
+- [x] 3. session.py / main.py: effort・初動・アイドル・境界指標の列を追加・保存
+- [x] 4. index.html / app.js: submit後に Paas 9段階の努力尺度モーダル
+- [x] 5. prepare_experiment.py: 各アノテータに再掲5枚のセッションを追加（同一条件）
+- [x] 6. 実サーバ + Playwright/実APIで end-to-end 検証
+
+## 次フェーズ候補（2026-09-15 論文戦略相談・ユーザー判断待ち）
+- [ ] 事前解析計画書（主要=作業時間 / 副次指標・混合効果モデル式・非劣性マージン・クラス別効率曲線）を `outputs/` に作成
+- [x] 末尾 scratch セッション（10枚）追加の設計変更 — 案A で実装完了（2026-09-15、詳細は冒頭セクション）
+  - [x] `scripts/prepare_experiment.py` に「Scratch(2回目)」を Session 9 の後へ専用RNGで追加（既存90枚・練習・S9 割当不変を audit + 新旧 JSON diff で再検証）
+  - [x] 記録は `is_repeat=true` + `condition=scratch`（backend/front は Session 9 の再掲機構を流用・コード変更なし）
+  - [x] `scripts/webapp/annotator_guide.md` を全12→13セッションへ更新
+  - [x] ローカル実サーバ + 実APIで end-to-end 検証（検証記録削除・サーバ停止済み）
+- [ ] アノテータ3名の倫理審査・同意手続きの確認
+- [x] `scripts/webapp/annotator_guide.md` の実施前修正 ①アノテータ選択を「番号 1/2/3」→ 実名（kubota/maeda/kaisho）へ ②「予測の直し方は自由（修正 / 削除→描き直し）」を明記（2026-09-15）
+- [ ] `scripts/webapp/annotator_guide.md` の残り: ③周辺視の楕円回転を練習「もう一度やる」で慣れる案内 ④目標精度の伝え方の決定 ⑤休憩・分割実施の目安
+- [ ] 事前解析計画に「描き直し画像（HITL で `shapes_deleted > 0`）の扱い＋描き直し率 vs 学習枚数を副次指標」を明記
+- [ ] webapp 一式 + `annotator_guide.md` の未コミット分を実施前にコミット
+
+## レビュー（計測項目追加）
+- 全5項目を実装し、実サーバ + Playwright + 実APIで end-to-end 検証済み。
+- 追加した記録列（summary.csv）: is_repeat, time_to_first_action_sec, idle_time_sec,
+  effort, eyelid_hd95, eyelid_assd, eyelid_boundary_f1。JSONL には events[]（{t,type,cls}）も保存。
+- 境界指標（cv2 distanceTransform）検証: 同一→HD95=0/ASSD=0/F1=1.0、1px→F1=1.0、5px→F1=0.5、空→None。
+- 全3クラス（eyelid/iris/pupil）で算出。楕円もマスクにラスタライズしてマスク境界のずれを測る方式
+  （楕円パラメータ直接比較ではない）。列は per-class 共通（{k}_hd95/{k}_assd/{k}_boundary_f1）へ整理。
+- 主観負荷: submit で metrics スナップショット（duration 確定）→タイマー停止→Paas 9段階モーダル→
+  評価後に POST。回答時間は duration に非計上。Playwright で overlay 表示→クリック7→記録=7 を確認。
+- 再掲セッション: 各アノテータに hitl_repeat（Session 9・5枚・同一条件）を追加。experiment.json 再生成、
+  全 assertion PASS。専用RNGで既存90枚割当・練習は不変。クライアントには is_repeat/condition 非露出（盲検維持）。
+- 検証で作成した test 記録は削除済み（既存の 2026-06-30 分 test_p_* 2件は棚卸し保留のまま温存）。
+
+---
 
 ## レビュー
 - webapp一式を実装し、バックエンド・フロント両方を検証済み（Playwright + API テスト）。

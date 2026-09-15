@@ -79,3 +79,30 @@ button:hover { background: #3d3d3d; }
 #metrics-table { width: 100%; border-collapse: collapse; }
 #metrics-table td { padding: 2px 4px; border-bottom: 1px solid var(--line); }
 #metrics-table td:last-child { text-align: right; }
+
+/* Post-submit Paas effort scale (1-9) */
+#effort-scale { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 14px; }
+.effort-btn { width: 46px; height: 46px; font-size: 18px; border-radius: 8px;
+  background: var(--panel2); border: 1px solid var(--line); color: inherit; cursor: pointer; }
+.effort-btn:hover { background: var(--accent); border-color: var(--accent); }
+
+/* Focus-loss pause overlay (blocks the canvas while the window is inactive) */
+#pause-overlay { position: absolute; inset: 0; z-index: 31; display: flex;
+  flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  text-align: center; line-height: 1.6;
+  background: rgba(17,17,17,.9); color: #fff; font-size: 18px; letter-spacing: .03em; }
+#pause-overlay.hidden { display: none; }
+
+/* Pre-submit confirmation screen (提出 → 確認 → 苦痛の記録) */
+#confirm-overlay { position: absolute; inset: 0; z-index: 32; display: flex;
+  align-items: flex-end; justify-content: center; padding-bottom: 44px;
+  background: rgba(0,0,0,.28); }
+#confirm-overlay.hidden { display: none; }
+.confirm-box { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  padding: 16px 22px; box-shadow: 0 10px 34px rgba(0,0,0,.55); text-align: center; }
+.confirm-title { margin: 0 0 14px; font-size: 16px; }
+.confirm-btns { display: flex; gap: 10px; justify-content: center; }
+.confirm-btns button { padding: 11px 20px; border-radius: 8px; font-size: 15px;
+  cursor: pointer; border: 1px solid var(--line); color: inherit; background: var(--panel2); }
+#confirm-ok { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+#confirm-abort { background: #7a2b2b; border-color: #7a2b2b; color: #fff; }

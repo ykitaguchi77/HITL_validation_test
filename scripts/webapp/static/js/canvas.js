@@ -24,6 +24,7 @@
       this.points = points.map((p) => [p[0], p[1]]); // [[x,y],...]
       this.editable = false;
       this.selVertex = -1;           // currently highlighted vertex (-1 = none)
+      this.selMulti = new Set();     // marquee-selected vertices (moved as a group)
       this.group = new Konva.Group();
       this.line = new Konva.Line({
         closed: true, stroke: color, fill: hexA(color, view.showFill === false ? 0 : FILL_ALPHA),
@@ -95,13 +96,35 @@
       const s = this.view.scale;
       this.anchors.forEach((a, idx) => {
         a.radius(ANCHOR / s);                       // 一定サイズ（拡大しない）
-        if (idx === this.selVertex) { a.fill(this.color); a.stroke("#fff"); }  // 色で強調
+        if (idx === this.selVertex || this.selMulti.has(idx)) { a.fill(this.color); a.stroke("#fff"); }  // 色で強調
         else { a.fill("#fff"); a.stroke(this.color); }
       });
     }
 
     highlightVertex(i) { this.selVertex = i; this._styleAnchors(); this.view.layer.batchDraw(); }
     clearVertexSel() { this.selVertex = -1; this._styleAnchors(); this.view.layer.batchDraw(); }
+
+    // marquee multi-select: highlight a set of vertices and take them off Konva's
+    // per-anchor drag so the tool controller can move them together.
+    setMultiSel(indices) {
+      this.selMulti = new Set(indices);
+      this.anchors.forEach((a) => a.draggable(false));
+      this._styleAnchors(); this.view.layer.batchDraw();
+    }
+    clearMultiSel() {
+      this.selMulti = new Set();
+      this.anchors.forEach((a) => a.draggable(true));
+      this._styleAnchors(); this.view.layer.batchDraw();
+    }
+    // translate the given vertices by (dx,dy) image px, repositioning their anchors
+    // (no _rebuild, so the multi-selection survives the move)
+    moveVertices(indices, dx, dy) {
+      indices.forEach((i) => { this.points[i] = [this.points[i][0] + dx, this.points[i][1] + dy]; });
+      this.line.points(this._flat());
+      indices.forEach((i) => { if (this.anchors[i]) this.anchors[i].position({ x: this.points[i][0], y: this.points[i][1] }); });
+      this._positionMidpoints();
+      this.view.layer.batchDraw();
+    }
 
     _positionMidpoints() {
       const n = this.points.length;

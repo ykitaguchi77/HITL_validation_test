@@ -26,6 +26,12 @@
       this.annotator = "";
       this.view = null; this.metrics = null; this.tools = null;
       this._timer = null; this._reviewing = false; this._gtNodes = null;
+      this._timing = false;   // an image is actively being timed (not paused/finished)
+      this._paused = false;   // timing paused because the window lost focus
+      this._hbTimer = null;   // heartbeat interval
+      this._confirming = false;   // pre-submit confirmation screen is showing
+      this._starting = false;     // a startSession is in progress (blocks re-entry)
+      this._loadSeq = 0;          // loadCurrent generation (stale loads bail before render)
     }
 
     async init() {
@@ -35,10 +41,19 @@
       this.config.annotators.forEach((a) => {
         const o = document.createElement("option");
         o.value = a;
-        o.textContent = a === "test" ? "動作テスト用（本番に含めない）" : `アノテータ ${a}`;
+        o.textContent = a === "test" ? "練習用（本番に含めない）" : a;
         asel.appendChild(o);
       });
       asel.onchange = () => this._loadRun();
+
+      // Pause timing + metrics whenever the window is hidden or loses focus (the
+      // annotator opened another window), and resume on return. Covers tab switch,
+      // minimize (visibilitychange) and other-app focus (blur/focus).
+      document.addEventListener("visibilitychange", () =>
+        document.hidden ? this._pauseTiming() : this._resumeTiming());
+      window.addEventListener("blur", () => this._pauseTiming());
+      window.addEventListener("focus", () => this._resumeTiming());
+
       await this._loadRun();
     }
 
@@ -104,12 +119,20 @@
 
     /* ---- session ---- */
     async startSession(s) {
+      // guard against a rapid second click while /api/session is in flight: two
+      // concurrent startSession -> two loadCurrent -> the prefill rendered TWICE
+      // (2 shapes per class). Re-entrancy guard + hiding the list both prevent it.
+      if (this._starting) return;
       const completed = this._attemptCount(s.key);
       const attempt = completed + 1;   // this run's attempt number (1 = first)
       if (this._doneSet().has(s.key) && !s.is_practice) {
         if (!confirm(`「${s.label}」は完了済みです（${completed}回完了）。\nやり直しますか？\n`
           + `これは ${attempt} 回目の試行として新たに記録されます（前回の記録は残ります）。`)) return;
       }
+      this._starting = true;
+      $("setup").classList.add("hidden");   // hide the session list at once (no 2nd click)
+      $("app").classList.remove("hidden");
+      try {
       this.attempt = attempt;
       this.sessionKey = s.key; this.isHitl = s.is_hitl; this.isPractice = !!s.is_practice;
       const ts = new Date();
@@ -118,8 +141,6 @@
       this.sessionData = await api(`/api/session/${this.annotator}/${s.key}`);
       this.idx = 0; this._reviewing = false;
 
-      $("setup").classList.add("hidden");
-      $("app").classList.remove("hidden");
       $("phase-label").textContent = s.label + (attempt > 1 ? `（${attempt}回目）` : "");
       $("hitl-note").textContent = this.isPractice
         ? "練習: 提出後に正解(GT)を点線表示します（解析対象外）"
@@ -136,16 +157,23 @@
         this._bindToolbar();
       }
       await this.loadCurrent();
+      } finally {
+        this._starting = false;
+      }
     }
 
     /* ---- image flow ---- */
     async loadCurrent() {
+      const seq = ++this._loadSeq;   // any newer loadCurrent supersedes this one
       const img = this.sessionData.images[this.idx];
       $("progress").textContent = `${this.idx + 1} / ${this.sessionData.images.length}`;
       // block input + hide the image until the prefill is ready (no mid-input pop-in)
       this._setLoading(true, this.isHitl ? "推論中… しばらくお待ちください" : "読み込み中…");
+      this._confirming = false; this._setConfirmOverlay(false);
+      $("submit-btn").textContent = "提出して次へ →"; $("revise-btn").classList.add("hidden");
       this._clearGT();
       await this.view.loadImage(img.url, img.width, img.height);
+      if (seq !== this._loadSeq) return;   // a newer load started; don't render this one
 
       this.currentInitial = null;
       if (this.isHitl) {   // practice + HITL have a prefill; scratch does not
@@ -154,6 +182,7 @@
           body: JSON.stringify({ annotator: this.annotator, session_key: this.sessionKey,
             image_id: img.image_id }),
         });
+        if (seq !== this._loadSeq) return;   // superseded during inference -> skip render
         this.currentInitial = res.initial;
         this._renderInitial(res.initial);
       }
@@ -164,6 +193,8 @@
       // latency is not counted as annotation time
       this.metrics.reset();
       this._setLoading(false);
+      this._paused = false;
+      this._timing = true;
       this._startTimer();
       $("status").textContent = "";
       this.onChange();
@@ -186,34 +217,115 @@
       this.view.layer.batchDraw();
     }
 
-    async submit() {
-      if (this._reviewing) {   // practice GT review -> advance to next image
-        this._reviewing = false; this._clearGT();
-        $("submit-btn").textContent = "提出して次へ →"; $("status").textContent = "";
-        this._advance(); return;
+    // Topbar 提出: on a fresh image open the confirmation state; while confirming,
+    // the same button acts as 確認OK (it is relabeled "確認OK・次へ →").
+    submit() {
+      if (this._confirming) { this._confirmOk(); return; }
+      // all 3 classes must be present before a submission is allowed
+      const missing = this._missingClasses();
+      if (missing.length) {
+        alert(`未入力のクラスがあります: ${missing.map((c) => c.name).join("・")}\n`
+          + "3クラス（まぶた・虹彩・瞳孔）すべてを描いてから提出してください。");
+        return;
       }
-      const img = this.sessionData.images[this.idx];
-      const annotation = this.view.getAnnotation();
-      const metrics = this.metrics.snapshot();
-      $("status").textContent = "保存中…";
-      const res = await api("/api/submit", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: this.sessionId, annotator: this.annotator,
-          session_key: this.sessionKey, image_id: img.image_id, attempt: this.attempt,
-          annotation, initial: this.currentInitial, metrics }),
-      });
-      if (res.is_practice && res.gt) {   // practice: reveal GT + Dice for calibration
-        this._stopTimer();
+      // 提出 -> 確認. Deselect everything so the review shows clean outlines (no
+      // anchors/highlights). Pause timing (review/rating time is not counted). The
+      // top-right buttons become 確認OK / 修正 / 中断. For practice, show the GT here.
+      this.tools.deselect();
+      this.metrics.pause();
+      this._stopTimer();
+      this._timing = false;
+      this._confirming = true;
+      this._setConfirmOverlay(true);
+      $("submit-btn").textContent = "確認OK・次へ →";
+      $("revise-btn").classList.remove("hidden");
+      if (this.isPractice) this._showPracticeGT();
+    }
+
+    // class metas that have no shape yet (submission requires all 3)
+    _missingClasses() {
+      const present = new Set(this.view.shapes.map((s) => s.classKey));
+      return this.config.classes.filter((c) => !present.has(c.key));
+    }
+
+    _setConfirmOverlay(on) {
+      const o = $("confirm-overlay");
+      if (o) o.classList.toggle("hidden", !on);
+    }
+    _exitConfirm() {
+      this._confirming = false;
+      this._setConfirmOverlay(false);
+      this._clearGT();
+      $("submit-btn").textContent = "提出して次へ →";
+      $("revise-btn").classList.add("hidden");
+    }
+    _confirmOk() {
+      if (!this._confirming) return;
+      this._exitConfirm();
+      this._finalizeSubmit();
+    }
+    _confirmEdit() {   // back to editing this image; timing resumes where it paused
+      if (!this._confirming) return;
+      this._exitConfirm();
+      this.metrics.resume(); this._paused = false;
+      this._timing = true; this._startTimer();
+    }
+    _confirmAbort() {
+      if (!this._confirming) return;
+      this.abort();   // abort() clears the confirm state
+    }
+
+    // practice only: show the merged GT outline + Dice on the confirmation screen
+    // (dry-run — nothing is saved), so a separate GT-review step is not needed.
+    async _showPracticeGT() {
+      try {
+        const img = this.sessionData.images[this.idx];
+        const annotation = this.view.getAnnotation();
+        const res = await api("/api/practice_gt", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ annotator: this.annotator, session_key: this.sessionKey,
+            image_id: img.image_id, annotation }),
+        });
+        if (!this._confirming) return;   // user already left the confirmation
         this._showGT(res.gt);
         const per = res.scores ? Object.entries(res.scores)
           .map(([k, v]) => `${k} ${v}`).join("  ") : "";
         $("status").textContent = `正解(GT)=点線  mean Dice ${res.mean_dice}  [${per}]`;
-        this._reviewing = true;
-        $("submit-btn").textContent = "確認OK・次へ →";
-        return;
-      }
-      $("status").textContent = "保存完了";   // real sessions: no Dice feedback
+      } catch (e) { /* GT display is best-effort */ }
+    }
+
+    // 確認OK -> 苦痛の記録(Paas) -> save. Metrics stay paused since 提出, so the
+    // duration reflects work up to 提出 and excludes confirmation/rating time.
+    async _finalizeSubmit() {
+      const img = this.sessionData.images[this.idx];
+      const annotation = this.view.getAnnotation();
+      const metrics = this.metrics.snapshot();   // duration frozen at 提出 (paused)
+      const effort = await this._askEffort();    // Paas 1-9, after the confirmation
+      $("status").textContent = "保存中…";
+      await api("/api/submit", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: this.sessionId, annotator: this.annotator,
+          session_key: this.sessionKey, image_id: img.image_id, attempt: this.attempt,
+          annotation, initial: this.currentInitial, metrics, effort }),
+      });
+      $("status").textContent = "保存完了";
       this._advance();
+    }
+
+    // Single-item Paas mental-effort rating (1-9). Resolves when a button is
+    // clicked. Shown after the timer stops so it never inflates duration.
+    _askEffort() {
+      return new Promise((resolve) => {
+        const ov = $("effort-overlay"), wrap = $("effort-scale");
+        wrap.innerHTML = "";
+        for (let i = 1; i <= 9; i++) {
+          const b = document.createElement("button");
+          b.className = "effort-btn"; b.textContent = i;
+          b.onclick = () => { ov.classList.add("hidden"); resolve(i); };
+          wrap.appendChild(b);
+        }
+        ov.classList.remove("hidden");
+      });
     }
 
     _advance() {
@@ -224,6 +336,7 @@
 
     _finishSession() {
       this._stopTimer();
+      this._timing = false;
       this._clearGT();
       this._incAttempt(this.sessionKey);   // count this completed attempt
       this._markDone(this.sessionKey);
@@ -238,8 +351,8 @@
     // it done, so it is redone cleanly from the start.
     async abort() {
       if (!confirm("このセッションを中断しますか？\nこのセッションの記録は破棄され、最初からやり直しになります。")) return;
-      this._stopTimer(); this._clearGT(); this._reviewing = false;
-      $("submit-btn").textContent = "提出して次へ →";
+      this._exitConfirm();
+      this._stopTimer(); this._timing = false; this._reviewing = false;
       try {
         await api("/api/abort", { method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ session_id: this.sessionId }) });
@@ -336,6 +449,7 @@
       br.oninput = applyBr; ct.oninput = applyCt;
       $("reset-adjust").onclick = () => { br.value = 0; ct.value = 0; applyBr(); applyCt(); };
       $("submit-btn").onclick = () => this.submit();
+      $("revise-btn").onclick = () => this._confirmEdit();
       $("abort-btn").onclick = () => this.abort();
     }
 
@@ -356,12 +470,37 @@
     _startTimer() {
       this._stopTimer();
       this._timer = setInterval(() => {
-        const sec = Math.floor((performance.now() - this.metrics.start) / 1000);
+        const sec = Math.floor(this.metrics._elapsedMs() / 1000);   // active time only
         $("timer").textContent = `${pad2(Math.floor(sec / 60))}:${pad2(sec % 60)}`;
         this._renderMetrics();
       }, 500);
+      this._hbTimer = setInterval(() => this.metrics.heartbeat(), 15000);  // away-from-desk audit
     }
-    _stopTimer() { if (this._timer) clearInterval(this._timer); this._timer = null; }
+    _stopTimer() {
+      if (this._timer) clearInterval(this._timer); this._timer = null;
+      if (this._hbTimer) clearInterval(this._hbTimer); this._hbTimer = null;
+    }
+
+    // pause/resume the active-time clock + metrics on window focus loss/gain
+    _pauseTiming() {
+      if (!this._timing || this._paused) return;
+      this._paused = true;
+      this.metrics.pause();
+      this._stopTimer();                 // freeze the visible timer + heartbeats
+      this._setPauseOverlay(true);
+    }
+    _resumeTiming() {
+      if (!this._timing || !this._paused) return;
+      if (document.hidden || !document.hasFocus()) return;   // still not fully active
+      this._paused = false;
+      this.metrics.resume();
+      this._startTimer();
+      this._setPauseOverlay(false);
+    }
+    _setPauseOverlay(on) {
+      const o = $("pause-overlay");
+      if (o) o.classList.toggle("hidden", !on);
+    }
 
     _renderMetrics() {
       const m = this.metrics;

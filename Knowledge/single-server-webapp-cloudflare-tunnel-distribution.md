@@ -55,9 +55,18 @@ N人のブラウザ ──HTTPS──> *.trycloudflare.com ──tunnel──> l
   自身のフォルダを基準にするのでどこへ置いても動く。Windows の「発行元不明」警告はファイル右クリック →
   プロパティ → 「ブロックの解除」で消える。
 
+## 固定URL化（named tunnel）のコスト構造 — 追記 (2026-07-13)
+「課金すれば固定URLにできる?」への正確な答えは **「Cloudflare への課金は基本不要。条件は自分のドメインを持つこと」**。
+- **quick tunnel**（`cloudflared tunnel --url ...`）= `*.trycloudflare.com` のランダムURL・**再起動ごとに変わる**。当日から動くが本番不向き。
+- **named tunnel**（名前付き）= 固定サブドメイン（例 `hitl.example.com`）を割当。**Cloudflare 無料プランで利用可能**でトンネル機能自体は無料。
+- 課金が要るのは **ドメイン取得料のみ**（レジストラで年 ~1,000〜1,500円程度）。Cloudflare のアカウント・トンネル・DNS は無料枠。
+- 手順（ドメイン前提）: `cloudflared tunnel login` → `tunnel create <name>` → `tunnel route dns <name> hitl.example.com` → 設定ファイルで `hitl.example.com → http://localhost:8000` を指定して起動（Windows サービス化で常駐可）。再起動しても URL 不変。
+- **医用データ配布では named tunnel + Cloudflare Access（無料枠50ユーザー）を推奨**: 共有PWの代わりに作業者のメールアドレスへワンタイムコードでログインさせられ、共有PWより堅牢＆作業者の取り違えも防げる（現行 HTTP Basic と併用可）。
+- ドメインを持ちたくない場合の代替: quick tunnel のまま毎回URL共有、または **Tailscale Funnel**（ドメイン不要で固定URL・無料枠あり）。
+
 ## 注意点・制約
 - quick tunnel は本番長期運用には不向き（URL揮発）。短期パイロット〜小規模配布向け。
-- HTTP Basic は共有PWのため作業者の取り違え防止はできない。厳密にするなら作業者別ID/PW（案B）。
+- HTTP Basic は共有PWのため作業者の取り違え防止はできない。厳密にするなら作業者別ID/PW（案B）か、上記 Cloudflare Access（メールPIN）へ移行。
 
 ## 関連
 - Experimental_record/20260624.md（実装・実機検証）

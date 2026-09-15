@@ -31,6 +31,9 @@
       this._touch = { pan: null, dist: 0 };
       this.history = []; this.hidx = -1;
       this.vsel = null;           // selected vertex: {shape, i}
+      this.vselMulti = null;      // marquee-selected vertices: {shape, idx:[...]}
+      this.marquee = null;        // in-progress rubber-band: {shape, start, rect}
+      this._grpDrag = null;       // dragging the multi-selected vertices as a group
       this.view.commit = () => this.commit();
       this.view.onVertexSelect = (shape, i) => this.selectVertex(shape, i);
       this._bind();
@@ -63,12 +66,15 @@
     /* ---- tool switching ---- */
     setTool(name) {
       this._cancelDraft();
+      if (this.marquee) { this.marquee.rect.destroy(); this.marquee = null; }
+      this._grpDrag = null;
+      this._clearMulti();
       this._press = null;
       this.tool = name;
       document.querySelectorAll("#toolbar .tool").forEach((b) =>
         b.classList.toggle("active", b.dataset.tool === name));
       const hints = {
-        select: "図形クリックで選択／頂点クリックで選択→ドラッグ移動・Backspace/Escで頂点削除／何もない所をドラッグで画像移動／ポリゴン選択中にShift+クリックで点を追加（ダブルクリックで確定）",
+        select: "図形クリックで選択／頂点クリックで選択→ドラッグ移動・Backspace/Escで頂点削除／何もない所をドラッグで画像移動／ポリゴン選択中にShift+クリックで点を追加（ダブルクリックで確定）／Ctrl+ドラッグで複数頂点を囲んでまとめて移動",
         polygon: "クリックで頂点追加／最初の点付近クリックかダブルクリックで閉じる／何もない所をドラッグで画像移動",
         ellipse: "ドラッグで楕円を作成／選択ツールで回転・リサイズ",
         pan: "ドラッグで画像移動／ホイール・2本指で拡大縮小",
@@ -88,13 +94,25 @@
     }
     deselect() {
       this.clearVertexSel();
+      this._clearMulti();
       if (this.selected) { this.selected.setEditable(false); this.selected.setSelected(false); }
       this.selected = null;
       this.view.layer.batchDraw();
     }
 
+    _clearMulti() {
+      if (this.vselMulti) {
+        try { this.vselMulti.shape.clearMultiSel(); } catch (e) { /* shape may be gone */ }
+        this.vselMulti = null;
+      }
+    }
+
     /* ---- vertex selection / deletion ---- */
     selectVertex(shape, i) {
+      // keep an active marquee selection if the grabbed vertex is part of it
+      // (so the click starts a group drag instead of collapsing to one vertex)
+      if (this.vselMulti && this.vselMulti.shape === shape && this.vselMulti.idx.includes(i)) return;
+      this._clearMulti();
       if (this.selected !== shape) this.select(shape);
       this.clearVertexSel();
       this.vsel = { shape, i };
@@ -121,6 +139,61 @@
       this.selected = null;
       this.metrics.shapeDeleted();
       this.commit(); this.app.onChange();
+    }
+
+    /* ---- marquee multi-vertex select + group move (Ctrl+drag) ---- */
+    _startMarquee(pt) {
+      const s = this.view.scale;
+      const rect = new Konva.Rect({
+        x: pt.x, y: pt.y, width: 0, height: 0, listening: false,
+        stroke: "#4fc3f7", strokeWidth: 1 / s, dash: [6 / s, 4 / s],
+        fill: "rgba(79,195,247,0.12)",
+      });
+      this.view.world.add(rect);
+      this.marquee = { shape: this.selected, start: pt, rect };
+    }
+    _marqueeUpdate(pt) {
+      const m = this.marquee;
+      m.rect.x(Math.min(m.start.x, pt.x)); m.rect.y(Math.min(m.start.y, pt.y));
+      m.rect.width(Math.abs(pt.x - m.start.x)); m.rect.height(Math.abs(pt.y - m.start.y));
+      this.view.layer.batchDraw();
+    }
+    _finishMarquee() {
+      const m = this.marquee; this.marquee = null;
+      const x0 = m.rect.x(), y0 = m.rect.y(), x1 = x0 + m.rect.width(), y1 = y0 + m.rect.height();
+      m.rect.destroy();
+      const idx = [];
+      m.shape.points.forEach((p, i) => {
+        if (p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1) idx.push(i);
+      });
+      this.clearVertexSel();
+      this._clearMulti();
+      if (idx.length) {
+        this.vselMulti = { shape: m.shape, idx };
+        m.shape.setMultiSel(idx);
+        this.app.setHint(`頂点を ${idx.length} 個選択 — ドラッグ／矢印キーでまとめて移動、Esc で解除`);
+      }
+      this.view.layer.batchDraw();
+    }
+    // is pt within (a small margin of) the multi-selection's bounding box?
+    _inMultiBBox(pt) {
+      if (!this.vselMulti) return false;
+      let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
+      this.vselMulti.idx.forEach((i) => {
+        const p = this.vselMulti.shape.points[i];
+        minx = Math.min(minx, p[0]); miny = Math.min(miny, p[1]);
+        maxx = Math.max(maxx, p[0]); maxy = Math.max(maxy, p[1]);
+      });
+      const pad = 8 / this.view.scale;   // grab tolerance in screen px
+      return pt.x >= minx - pad && pt.x <= maxx + pad && pt.y >= miny - pad && pt.y <= maxy + pad;
+    }
+    _grpDragMove(pt) {
+      const g = this._grpDrag;
+      const dx = pt.x - g.last.x, dy = pt.y - g.last.y;
+      if (dx || dy) {
+        this.vselMulti.shape.moveVertices(this.vselMulti.idx, dx, dy);
+        g.last = pt; g.moved = true;
+      }
     }
 
     // move the whole selected shape by (dx,dy) image px (commit handled by caller)
@@ -226,6 +299,20 @@
       // ellipse creation is drag-based -> begin immediately
       if (this.tool === "ellipse" && left) { this._ellipseStart(pt); return; }
 
+      // Ctrl+drag while a polygon is selected: rubber-band select its vertices
+      if (this.tool === "select" && left && (e.evt.ctrlKey || e.evt.metaKey) &&
+          this.selected && this.selected.kind === "polygon") {
+        this._startMarquee(pt);
+        return;
+      }
+
+      // grab within the multi-selection's box (no Ctrl) -> move those vertices together
+      if (this.tool === "select" && left && !(e.evt.ctrlKey || e.evt.metaKey) &&
+          this.vselMulti && this._inMultiBBox(pt)) {
+        this._grpDrag = { last: pt, moved: false };
+        return;
+      }
+
       // Shift+click while a polygon is selected: enter "add points" mode and append
       // the clicked vertices to that EXISTING polygon (integrated into it, not a new
       // shape). Stays active until double-click / Enter (commit) or Esc (cancel).
@@ -267,6 +354,9 @@
       const pt = this._imgPt();
       if (pt) this.metrics.mouseMove(pt);
 
+      if (this.marquee && pt) { this._marqueeUpdate(pt); return; }
+      if (this._grpDrag && pt) { this._grpDragMove(pt); return; }
+
       if (this.panning && this._panLast && screen) {
         const dx = screen.x - this._panLast.x, dy = screen.y - this._panLast.y;
         this.view.world.position({ x: this.view.world.x() + dx, y: this.view.world.y() + dy });
@@ -298,6 +388,15 @@
     }
 
     _up() {
+      if (this.marquee) { this._finishMarquee(); this._press = null; return; }
+      if (this._grpDrag) {
+        const moved = this._grpDrag.moved; this._grpDrag = null;
+        if (moved) {   // one undo step, one vertexMoved per moved vertex
+          this.vselMulti.idx.forEach(() => this.metrics.vertexMoved());
+          this.commit(); this.app.onChange();
+        }
+        return;
+      }
       if (this.panning) {
         this.panning = false; this._panLast = null;
         this.view.stage.container().style.cursor = this.tool === "pan" ? "grab" : "default";
@@ -314,8 +413,9 @@
         else if (this.tool === "polygon") this._polyClick(pr.img);
         else if (this.tool === "select" && !pr.onVertex) {
           // shape/class selection is sidebar-only; a canvas click just clears the
-          // highlighted vertex (does NOT select/deselect a shape).
+          // highlighted vertex / marquee selection (does NOT select/deselect a shape).
           this.clearVertexSel();
+          this._clearMulti();
         }
       }
     }
@@ -334,6 +434,7 @@
         const shape = this.view.addPolygon(cls, m.color, [[pt.x, pt.y]]);
         this.draft = { shape, committed: [[pt.x, pt.y]], markers: [], color: m.color };
         this._addDraftMarker(pt);
+        this.metrics.vertexAdded();   // count each placed point (scratch effort ~ HITL extend)
         return;
       }
       // close if near first point (screen distance)
@@ -343,6 +444,7 @@
       if (this.draft.committed.length >= 3 && dpx < CLOSE_PX) { this._polyFinish(); return; }
       this.draft.committed.push([pt.x, pt.y]);
       this._addDraftMarker(pt);
+      this.metrics.vertexAdded();   // count each placed point
     }
 
     _addDraftMarker(pt) {
@@ -508,9 +610,16 @@
           this.view.stage.container().style.cursor = this.tool === "pan" ? "grab" : "default";
         return;
       }
-      // arrow keys nudge the selected shape by 1 image px; one undo step per gesture
+      // arrow keys nudge by 1 image px; one undo step per gesture. When a marquee
+      // selection is active they move just those vertices, else the whole shape.
       const NUDGE = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] };
       if (NUDGE[e.key]) {
+        if (this.vselMulti) {
+          e.preventDefault();
+          if (down) { this.vselMulti.shape.moveVertices(this.vselMulti.idx, NUDGE[e.key][0], NUDGE[e.key][1]); this._nudgeDirty = true; }
+          else if (this._nudgeDirty) { this._nudgeDirty = false; this.vselMulti.idx.forEach(() => this.metrics.vertexMoved()); this.commit(); this.app.onChange(); }
+          return;
+        }
         if (!this.selected) return;
         e.preventDefault();
         if (down) { this._nudge(NUDGE[e.key][0], NUDGE[e.key][1]); this._nudgeDirty = true; }
@@ -534,6 +643,7 @@
           e.preventDefault();
           if (this.extend) this._cancelExtend();             // 追加を取消（元の形に戻す）
           else if (this.draft || this.ellipseDraft) this._cancelDraft();
+          else if (this.vselMulti) { this._clearMulti(); this.app.setHint(""); }  // 複数選択を解除
           else if (this.vsel) this.deleteSelectedVertex();   // 選択頂点を削除
           else this.deselect();
           break;

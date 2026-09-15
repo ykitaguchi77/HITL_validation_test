@@ -33,6 +33,7 @@
       <div class="right">
         <span id="status" class="muted"></span>
         <button id="submit-btn">提出して次へ →</button>
+        <button id="revise-btn" class="hidden" title="提出を取りやめて編集に戻る">修正</button>
         <button id="abort-btn" title="セッションを中断（記録を破棄して最初からやり直し）">中断</button>
       </div>
     </header>
@@ -57,6 +58,13 @@
       <main id="canvas-wrap"><div id="canvas"></div>
         <div id="hint" class="hint"></div>
         <div id="loading-overlay" class="hidden">推論中…</div>
+        <div id="pause-overlay" class="hidden">⏸ 一時停止中（ウィンドウが非アクティブ）<br>このウィンドウに戻ると自動的に再開します</div>
+        <!-- Pre-submit confirmation: 提出 → 確認画面 → 苦痛の記録. Semi-transparent
+             blocker so the annotation (and, for practice, the GT) stays visible;
+             the 確認OK / 修正 / 中断 actions live in the top-right buttons. -->
+        <div id="confirm-overlay" class="hidden">
+          <div class="confirm-box">内容を確認して、右上の［確認OK・次へ／修正／中断］を選んでください</div>
+        </div>
       </main>
 
       <!-- Right sidebar -->
@@ -74,6 +82,16 @@
         <table id="metrics-table" class="mono small"></table>
         <p class="muted small" id="hitl-note"></p>
       </aside>
+    </div>
+  </div>
+
+  <!-- Post-submit single-item effort rating (Paas). Shown AFTER the timer stops,
+       so answering it is never counted as annotation time. -->
+  <div id="effort-overlay" class="overlay hidden">
+    <div class="panel">
+      <h2>この画像の作業に、どれくらいの精神的な負担・努力を要しましたか？</h2>
+      <p class="muted small">1＝非常に少ない　…　9＝非常に大きい（この回答時間は計測に含まれません）</p>
+      <div id="effort-scale"></div>
     </div>
   </div>
 
