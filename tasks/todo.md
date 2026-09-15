@@ -7,8 +7,11 @@
   - `scripts/webapp/annotator_guide.md` を全13セッション構成へ更新
 - [x] 事前解析計画書 `outputs/docs/analysis_plan.md`（主要=duration_sec、log(枚数)用量反応の混合効果モデル、scratch 基準=2回目、非劣性マージン Dice −0.01/HD95 +2px、attempt 1 採用、図表計画）を作成
 - [x] アノテータ背景調査票 `outputs/docs/annotator_questionnaire.md`（職種・経験・アノテ経験・GT関与・操作環境・自己評価・実施予定・作業後質問）を作成
+- [x] OSF 事前登録用ドラフト `outputs/docs/osf_preregistration.md`（OSF Prereg テンプレート構成・英文、experiment.json の sha256 記載）を作成
+- [ ] OSF に登録（著者・倫理番号・エンバーゴを記入して提出）
 - [ ] 本番前に `run_server.bat` で再起動（experiment.json は起動時ロード）・`$Pass` を本番値へ
 - [ ] 倫理審査の状況確認（患者画像二次利用＋アノテータの研究参加同意）
+- [ ] 背景調査票を3名へ配布・作業前に回収し、`annotator` 名と紐づけて `outputs/` に保存
 
 ## レビュー（Scratch 2回目）
 - 順序効果（scratch が常に習熟前）の補正用に、同一人物・同一画像の pre/post scratch ペア（30ペア）を得る設計。
@@ -107,14 +110,17 @@ outputs/results/         # セッション結果 json/csv
 - [ ] アノテータ3名の倫理審査・同意手続きの確認
 - [x] `scripts/webapp/annotator_guide.md` の実施前修正 ①アノテータ選択を「番号 1/2/3」→ 実名（kubota/maeda/kaisho）へ ②「予測の直し方は自由（修正 / 削除→描き直し）」を明記（2026-09-15）
 - [ ] `scripts/webapp/annotator_guide.md` の残り: ③周辺視の楕円回転を練習「もう一度やる」で慣れる案内 ④目標精度の伝え方の決定 ⑤休憩・分割実施の目安
-- [ ] 事前解析計画に「描き直し画像（HITL で `shapes_deleted > 0`）の扱い＋描き直し率 vs 学習枚数を副次指標」を明記
-- [ ] 事前解析計画に「同一 `session_key` に複数試行（`a2`, `a3`…＝中断→やり直し）がある場合の扱い（最新のみ採用等）」を明記
+- [x] 事前解析計画に「描き直し画像（HITL で `shapes_deleted > 0`）の扱い＋描き直し率 vs 学習枚数を副次指標」を明記（`outputs/docs/analysis_plan.md` §3/§5.5）（2026-09-15）
+- [x] 事前解析計画に「同一 `session_key` に複数試行がある場合の扱い」を明記（attempt 1 の完了記録を採用、`outputs/docs/analysis_plan.md` §3）（2026-09-15）
 - [x] webapp 一式 + `annotator_guide.md` の未コミット分を実施前にコミット（`a5951a0`・31ファイル、患者データ/`.pth`/資格情報の非混入を機械確認）（2026-09-15）
 - [x] GitHub へ push（`git push origin main` は自動モード分類器にブロック → ユーザーが `! git push origin main` を実行し `4716de3..a5951a0 main -> main` で成功）（2026-09-15）
 - [ ] `scripts/webapp/run_server.ps1` の `$Pass` を本番値へ変更（変更はコミットしない）→ `run_server.bat` で再起動
 - [x] 論文化リスクの対応状況を棚卸し（10件: ✅1 / ⚠️3 / ❌5 / ❓1）し「開始前必須 / 後から補える」に仕分けして提示（2026-09-15）
-- [ ] **開始前必須**: 事前解析計画書 `outputs/analysis_plan.md`（上記の描き直し・複数試行の扱いも統合）— ユーザー判断待ち
-- [ ] **開始前必須**: アノテータ3名の背景情報（経験年数・専門・アノテーション経験）を短い質問票で収集し `outputs/` に保存（`annotator` 名と紐づけ）
+- [x] **開始前必須**: 事前解析計画書 `outputs/docs/analysis_plan.md` v1.0 を作成・コミット `e131aff`（2026-09-15）
+- [x] `e131aff` を GitHub へ push（ユーザー実行 `! git push origin main` → `a5951a0..e131aff`）（2026-09-15）
+- [x] 解析計画の登録先を判断: UMIN/jRCT は不要（健康アウトカム無し=非介入。倫理申請で一文確認）→ OSF Registries で事前登録を推奨、研究種別は「prospective blinded reader study using retrospectively collected images / MRMC」と表現（2026-09-15）
+- [ ] OSF 登録用の英文要約（問い・仮説・デザイン・主要評価項目・サンプルサイズ根拠・解析）を `outputs/docs/` に作成 → OSF に `analysis_plan.md` 添付で登録 — ユーザー判断待ち
+- [x] **開始前必須**: 背景質問票 `outputs/docs/annotator_questionnaire.md` を作成（2026-09-15）→ [ ] 3名へ配布・回答を `outputs/` に `annotator` 名と紐づけて保存
 - [ ] 後から補える: 学習曲線の seed 反復（100〜500 で 2〜3 run・誤差棒）／U-Net ablation は削除推奨／タイミング副チャネルは Limitations
 
 ## レビュー（計測項目追加）
