@@ -188,5 +188,5 @@ Code, analysis plan and the annotator guide are version-controlled
 made public or archived with a DOI at publication). Patient images, the assignment file and
 raw results are not shared publicly because file names embed patient identifiers; de-identified
 per-image result tables will be shared on request/at publication subject to ethics approval.
-Ethics: Institutional Review Board of Osaka University Hospital (大阪大学医学部附属病院 倫理審査委員会), approval No. 19492-7 [ approval date ].
+Ethics: Institutional Review Board of Osaka University Hospital (大阪大学医学部附属病院 倫理審査委員会), approval No. 19492-7, approved 20 September 2022.
 Embargo: 1 week.
