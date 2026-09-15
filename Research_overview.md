@@ -196,8 +196,21 @@ audit に「最終セッション・非HITL・画像集合==セッション0・�
 backend/frontend はデータ駆動でコード変更なし。ローカル起動の実 API で `/api/run`(13セッション・盲検キー非露出)・`/api/session`(10枚=セッション0)・
 `/api/predict`(空プレフィル)・`/api/submit`(`summary.csv` に `condition=scratch, is_repeat=True, session_index=10`)を確認し、検証記録削除・サーバ停止。
 `annotator_guide.md` を**全13セッション**構成へ更新(1人 106→116枚)。**本番前に `run_server.bat` で再起動が必要**(experiment.json は起動時ロード)。
-これで**実験設計は「練習2 + Scratch + 盲検 HITL 9(うち S9 再掲) + Scratch 2回目」の13セッションで確定**し、残るは未コミット分の一括コミット・
-事前解析計画書・ガイド残り3点・倫理手続きの確認、そして実アノテーション施行・統計解析。
+これで**実験設計は「練習2 + Scratch + 盲検 HITL 9(うち S9 再掲) + Scratch 2回目」の13セッションで確定**。
+続けて **7/12〜本日分の未コミット変更を一括コミット(`a5951a0`・31ファイル)**: コミット前に `git check-ignore` で患者識別情報
+(`experiment.json`/`outputs/results/`/`training_subsets/`/`*.pth`)の除外維持を確認し、ステージ予定一覧を患者ファイル名・`.pth`・
+パスワード文字列で grep(ヒットは `run_server.ps1` の仮値 `$Pass="hitl"` のみ=本番値でないため許容)。`git push` は自動モードの
+分類器にブロックされたため `! git push origin main` を案内し、**ユーザー実行で push 成功(`4716de3..a5951a0 main -> main`、
+private `ykitaguchi77/HITL_validation_test`)**=リモートは最新のコミットと一致。あわせて
+「複数人が同時ログインしたら?」に対し、**サーバはステートレス(記録は人×開始時刻フォルダで分離・進捗は localStorage・推論は
+ウォームアップ済みで 0.1秒/回・推論待ちは duration 非計上)のため同時利用は問題なし**、同一人物の2台利用は進捗ずれ・名前取り違えは
+運用注記で防ぐ、と回答。残るは `$Pass` 本番値化(コミットしない)・`run_server.bat` 再起動・事前解析計画書・ガイド残り3点・
+倫理手続きの確認、そして実アノテーション施行・統計解析。
+セッション末尾で「論文化リスクは全て対応済みか」に対し**「全部ではない」と棚卸し表(10件)で回答**: ✅順序効果(Scratch 2回目)、
+⚠️GT スタイル継承(境界指標併記のみ)・疲労分割(記録は可・ガイド未記載)・タイミング副チャネル(Limitations)、
+❌**事前解析計画書(最重要)**・学習曲線の seed 反復・U-Net ablation・**アノテータ背景情報の質問票(新規に顕在化)**・attempt≥2 の扱い、
+❓倫理審査。**開始前必須は「事前解析計画書 + 背景質問票(+倫理確認)」のみ**で、他は後から補える(seed 追加学習/ablation 削除/Limitations)と整理。
+`outputs/analysis_plan.md` の作成+質問票文面を次の一手として提示 → **ユーザー判断待ち**。
 
 ## マイルストーン
 - [x] データ所在・手動アノテ範囲の確定（2026-06-14, 前リポジトリ調査）
@@ -242,7 +255,12 @@ backend/frontend はデータ駆動でコード変更なし。ローカル起動
 - [ ] 本番前に `run_server.bat` でサーバ再起動(再生成した `experiment.json` を反映)
 - [x] `annotator_guide.md` の実施前修正(①アノテータ選択を実名表記へ ②修正/描き直し方針=自由 を明記)。`git diff --stat` +16/−6 で確認(2026-09-15)
 - [ ] `annotator_guide.md` の残り3点(③楕円回転の練習案内 ④目標精度の伝え方 ⑤休憩・分割の目安) — ユーザー判断待ち
-- [ ] webapp 一式 + `annotator_guide.md` の未コミット分を実施前にコミット
+- [x] webapp 一式 + `annotator_guide.md` + 研究ノートの未コミット分を実施前に一括コミット(`a5951a0`・31ファイル。コミット前に `.gitignore` 除外維持と患者ファイル名/`.pth`/パスワード文字列の非混入を機械確認)(2026-09-15)
+- [x] GitHub へ push(`git push origin main` は自動モード分類器にブロック → ユーザーが `! git push origin main` を実行し `4716de3..a5951a0` を push 成功)(2026-09-15)
+- [ ] `run_server.ps1` の `$Pass` を本番パスワードへ変更(git 管理下のため変更はコミットしない)
+- [x] 論文化リスクの対応状況を棚卸し(10件の表: ✅1 / ⚠️3 / ❌5 / ❓1)し、**開始前必須=事前解析計画書+アノテータ背景質問票(+倫理確認)**、他は後から補えると仕分けしてユーザーへ提示(2026-09-15)
+- [ ] アノテータ3名の背景情報(経験年数・専門・アノテーション経験)を短い質問票で収集し `outputs/` に保存 — ユーザー判断待ち
+- [ ] 倫理審査・同意手続きの状況確認(ユーザー側手続き)
 - [ ] （ablation）vanilla U-Net 版モデルの学習(スコープ次第で省略可)
 - [ ] 実アノテーション施行・結果集計・統計解析（phase別効率の比較）
 - [ ] 論文用 図表・本文化
@@ -313,6 +331,9 @@ backend/frontend はデータ駆動でコード変更なし。ローカル起動
 - 2026-09-15: **`annotator_guide.md` の実施前修正を実施**(手順書のみ・コード不変)。ユーザー承認を受け ①ログイン手順を「番号 1/2/3」→実名(kubota/maeda/kaisho)選択+「動作テスト用」回避+選び間違い注意へ ②「予測の直し方は自由(頂点修正でも削除→描き直しでも可、最も早く正確な方法を選ぶ)」を明記。`main.py` の `UI_ANNOTATORS` で UI 表示順を裏取り。②により `shapes_deleted > 0` を描き直しとして識別し**描き直し率 vs 学習枚数を副次指標化**する方針。残り③④⑤は未対応、未コミット分の一括コミットを推奨。 -> [記録](Experimental_record/20260915.md)
 - 2026-09-15: **最終セッションに scratch を再掲する案を検討・推奨**(設計相談・未実装)。画像選択3案(A=同一10枚再描画/B=新規共通10枚/C=HITL既出画像)を比較し**案A を推奨**(順序効果を画像対応づけの前後差で最も高感度に推定、B は順序効果と画像難易度が分離不能、C は記憶で汚れる)。解析は習熟後 scratch を主基準(保守的)・前後差を順序効果として別報告。実装は Session 9 の後に専用RNGで追加・`is_repeat=true`+`condition=scratch`・ガイド13セッション化(約1h)。**案A で着手可否のユーザー判断待ち** -> [詳細](Experimental_record/20260915.md)
 - 2026-09-15: ユーザー決定「Aで行きましょう」を受け**最終セッション「Scratch（2回目）」を実装・検証完了**(設計変更)。`scripts/prepare_experiment.py` に `SCRATCH_REPEAT_KEY/LABEL` を追加し、各アノテータの Session 9 の後にセッション0と同じ10枚を専用RNG(`SEED+2000+ai`)で再シャッフルした非HITL セッション(`condition=scratch`/`is_repeat=True`/`session_index=10`)を生成、audit に最終位置・非HITL・画像集合==セッション0・順序差・index 連番の assertion を追加。`experiment.json` 再生成(全 PASS)、新旧 JSON 比較で `blocks`/`practice`/`latin_square`/`models`・各 `sessions[0..9]` 完全一致=既存割付不変。backend/frontend はデータ駆動で無変更。ローカル実 API で `/api/run`(13セッション・盲検キー非露出)/`/api/session`(10枚=セッション0)/`/api/predict`(空)/`/api/submit`(CSV に scratch/is_repeat/index=10)を確認し検証記録削除・サーバ停止。`annotator_guide.md` を全13セッションへ更新(1人 116枚)。**本番前に `run_server.bat` で再起動要**・未コミット分の一括コミット推奨 -> [詳細](Experimental_record/20260915.md)
+- 2026-09-15: **実施前の一括コミット `a5951a0`(31ファイル)+複数人同時ログインの挙動確認+GitHub へ push 完了**(git 操作・コード変更なし)。`git check-ignore` で患者識別情報の除外維持・ステージ予定一覧の患者ファイル名/`.pth`/パスワード grep を経てコミット(ヒットは `run_server.ps1` の仮値 `$Pass="hitl"` のみ)。同時ログインは**ステートレス設計(人×開始時刻の記録フォルダ・localStorage 進捗・ウォームアップ済み推論 0.1秒/回・推論待ち非計上)で問題なし**、2台利用の進捗ずれと名前取り違えは運用注記で対処と回答。`git push` は自動モードの分類器に拒否され `! git push origin main` の手順を案内 → **ユーザー実行で `4716de3..a5951a0` を push 成功**。運用注意: 本番前 `run_server.bat` 再起動・`$Pass` 本番値化(未コミット維持) -> [詳細](Experimental_record/20260915.md)
+- 2026-09-15: **実験結果の出力先を確認応答**(Q&A・コード変更なし)。`outputs/results/{名前}_{セッションキー}_a{試行}_{開始時刻}/` に `records.jsonl`(ロスレス)+`summary.csv`(解析用)がセッションごとに生成され、盲検の正解列はサーバ側記録のみ。解析は全 `summary.csv` 連結 → `is_practice=False` かつ `annotator != test` で 1人 110行×3名。中断フォルダは abort で削除・やり直しは `a2`…で残るため**同一 session_key の複数試行の扱いを事前解析計画で決める**を todo 化。現状 `test_*` 7件のみで本番未収集 -> [記録](Experimental_record/20260915.md)
+- 2026-09-15: **論文化リスクの対応状況を棚卸し**(Q&A・コード変更なし)。「全て対応できていたか」に「全部ではない」と回答し10件の表で整理: ✅順序効果(Scratch 2回目)/⚠️GT スタイル継承・疲労分割・タイミング副チャネル/❌**事前解析計画書**・学習曲線 seed 反復・U-Net ablation・**アノテータ背景質問票(新規顕在化)**・attempt≥2 の扱い/❓倫理審査。**開始前必須は事前解析計画書+背景質問票(+倫理確認)のみ**、残りは後から補える(seed 追加学習/ablation 削除/Limitations)と仕分け。`outputs/analysis_plan.md` 作成+質問票文面を次の一手として提示 → ユーザー判断待ち -> [記録](Experimental_record/20260915.md)
 
 ## 関連 Knowledge
 - [CVAT風HITLアノーテーションwebappの実装知見](Knowledge/hitl-annotation-webapp-konva.md)
@@ -324,6 +345,7 @@ backend/frontend はデータ駆動でコード変更なし。ローカル起動
 - [Windowsバッチ(.bat)は純ASCIIで書く(日本語コメントは文字化け＆誤実行の原因)](Knowledge/windows-batch-file-ascii-only.md)
 - [クラス別の労力計測は「選択中クラス」で帰属させ、既定クラスへの初期時間の混入を解析で補正する](Knowledge/per-class-effort-attribution-by-active-class.md)
 - [医用研究リポジトリを公開する前のデータ衛生(.gitignore 設計とコミット前検証)](Knowledge/medical-repo-pre-push-data-hygiene.md)
+- [`git push` が auto モードの分類器でブロックされたらユーザーに `! git push` を委ねる](Knowledge/git-push-blocked-by-auto-mode-classifier.md)
 - [HITL/インタラクティブセグメンテーションの効率評価で使われる計測項目(既報サーベイ)](Knowledge/hitl-annotation-efficiency-metrics-from-literature.md)
 - [2Dマスクの境界指標(HD95/ASSD/Boundary-F1@tol)を cv2.distanceTransform だけで実装する](Knowledge/boundary-metrics-2d-cv2-distancetransform.md)
 - [シード固定の実験割付へ後から要素を足すときは専用RNGを使う](Knowledge/seeded-design-additive-change-dedicated-rng.md)
@@ -332,6 +354,7 @@ backend/frontend はデータ駆動でコード変更なし。ローカル起動
 - [必須クラス制約は導入前に実データ全体で成立を検証する(隠れ瞳孔症例)](Knowledge/enforce-required-classes-verify-against-dataset.md)
 - [検証用バックグラウンドサーバーは終了後に必ず停止しポートを解放する(WinError 10048 回避)](Knowledge/stop-background-verification-server-to-free-port.md)
 - [被験者実験の実施前に「被験者になりきったウォークスルー」で手順書・運用・計測方針の穴を洗い出す](Knowledge/participant-walkthrough-before-study-launch.md)
+- [データ収集開始前に論文化リスクを「開始前必須 / 後から補える」に仕分けして棚卸しする](Knowledge/pre-launch-paper-risk-triage.md)
 
 ## 関連リソース
 - 計画: `PLAN.md`

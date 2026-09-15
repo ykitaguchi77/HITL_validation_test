@@ -5,7 +5,10 @@
   - `scripts/webapp/config/experiment.json` 再生成（全 assertion PASS）。新旧 diff: blocks/practice/latin_square/models と各アノテータ sessions[0..9] は完全一致、末尾 1 セッションのみ追加
   - backend/frontend はデータ駆動のためコード変更なし。ローカル起動で /api/run（13セッション・盲検キー非露出）・/api/session（10枚=セッション0）・/api/predict（空プレフィル）・/api/submit（summary.csv に condition=scratch/is_repeat=True/session_index=10）を実 API 検証、検証記録削除・サーバ停止
   - `scripts/webapp/annotator_guide.md` を全13セッション構成へ更新
-- [ ] 本番前に `run_server.bat` で再起動（experiment.json は起動時ロード）
+- [x] 事前解析計画書 `outputs/docs/analysis_plan.md`（主要=duration_sec、log(枚数)用量反応の混合効果モデル、scratch 基準=2回目、非劣性マージン Dice −0.01/HD95 +2px、attempt 1 採用、図表計画）を作成
+- [x] アノテータ背景調査票 `outputs/docs/annotator_questionnaire.md`（職種・経験・アノテ経験・GT関与・操作環境・自己評価・実施予定・作業後質問）を作成
+- [ ] 本番前に `run_server.bat` で再起動（experiment.json は起動時ロード）・`$Pass` を本番値へ
+- [ ] 倫理審査の状況確認（患者画像二次利用＋アノテータの研究参加同意）
 
 ## レビュー（Scratch 2回目）
 - 順序効果（scratch が常に習熟前）の補正用に、同一人物・同一画像の pre/post scratch ペア（30ペア）を得る設計。
@@ -105,7 +108,14 @@ outputs/results/         # セッション結果 json/csv
 - [x] `scripts/webapp/annotator_guide.md` の実施前修正 ①アノテータ選択を「番号 1/2/3」→ 実名（kubota/maeda/kaisho）へ ②「予測の直し方は自由（修正 / 削除→描き直し）」を明記（2026-09-15）
 - [ ] `scripts/webapp/annotator_guide.md` の残り: ③周辺視の楕円回転を練習「もう一度やる」で慣れる案内 ④目標精度の伝え方の決定 ⑤休憩・分割実施の目安
 - [ ] 事前解析計画に「描き直し画像（HITL で `shapes_deleted > 0`）の扱い＋描き直し率 vs 学習枚数を副次指標」を明記
-- [ ] webapp 一式 + `annotator_guide.md` の未コミット分を実施前にコミット
+- [ ] 事前解析計画に「同一 `session_key` に複数試行（`a2`, `a3`…＝中断→やり直し）がある場合の扱い（最新のみ採用等）」を明記
+- [x] webapp 一式 + `annotator_guide.md` の未コミット分を実施前にコミット（`a5951a0`・31ファイル、患者データ/`.pth`/資格情報の非混入を機械確認）（2026-09-15）
+- [x] GitHub へ push（`git push origin main` は自動モード分類器にブロック → ユーザーが `! git push origin main` を実行し `4716de3..a5951a0 main -> main` で成功）（2026-09-15）
+- [ ] `scripts/webapp/run_server.ps1` の `$Pass` を本番値へ変更（変更はコミットしない）→ `run_server.bat` で再起動
+- [x] 論文化リスクの対応状況を棚卸し（10件: ✅1 / ⚠️3 / ❌5 / ❓1）し「開始前必須 / 後から補える」に仕分けして提示（2026-09-15）
+- [ ] **開始前必須**: 事前解析計画書 `outputs/analysis_plan.md`（上記の描き直し・複数試行の扱いも統合）— ユーザー判断待ち
+- [ ] **開始前必須**: アノテータ3名の背景情報（経験年数・専門・アノテーション経験）を短い質問票で収集し `outputs/` に保存（`annotator` 名と紐づけ）
+- [ ] 後から補える: 学習曲線の seed 反復（100〜500 で 2〜3 run・誤差棒）／U-Net ablation は削除推奨／タイミング副チャネルは Limitations
 
 ## レビュー（計測項目追加）
 - 全5項目を実装し、実サーバ + Playwright + 実APIで end-to-end 検証済み。
