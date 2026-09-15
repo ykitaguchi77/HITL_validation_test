@@ -11,7 +11,8 @@ A blinded, within-subject, multi-reader multi-case study of human-in-the-loop an
 efficiency versus model maturity in periocular photographs
 
 ## Authors
-[ names, affiliations, ORCID ]
+Yoshiyuki Kitaguchi — Department of Ophthalmology, The University of Osaka Graduate School of Medicine.
+ORCID: 0000-0002-0135-9715
 
 ## Description
 Human-in-the-loop (HITL) annotation — correcting a model's prediction instead of drawing from
@@ -187,5 +188,5 @@ Code, analysis plan and the annotator guide are version-controlled
 made public or archived with a DOI at publication). Patient images, the assignment file and
 raw results are not shared publicly because file names embed patient identifiers; de-identified
 per-image result tables will be shared on request/at publication subject to ethics approval.
-Ethics: [ IRB name / approval number / date ].
-Embargo: [ e.g. until publication, max 4 years ].
+Ethics: Institutional Review Board of Osaka University Hospital (大阪大学医学部附属病院 倫理審査委員会), approval No. 19492-7 [ approval date ].
+Embargo: 1 week.
