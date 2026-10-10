@@ -13,8 +13,20 @@ data/
 
 # --- Patient-identifying data (filenames embed patient IDs) -> DO NOT push ---
 scripts/webapp/config/experiment.json
+scripts/webapp/config/annotator_tokens.json
+annotator_links.md
 outputs/training_subsets/
 outputs/results/
+outputs/study_pool/
+outputs/proposals/
+outputs/model_eval/per_image.csv
+outputs/model_eval/per_step.csv
+outputs/model_eval/orders.json
+outputs/model_eval/manifest.json
+outputs/analysis/records_used*.csv
+
+# --- Browser-automation scratch (Playwright MCP) ---
+.playwright-mcp/
 
 # --- Large model checkpoints (419MB, patient-derived) -> distribute separately ---
 outputs/models/*.pth

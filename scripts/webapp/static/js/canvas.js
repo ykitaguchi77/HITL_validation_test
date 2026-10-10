@@ -152,6 +152,19 @@
       this.view.commit && this.view.commit();
     }
 
+    // delete several vertices at once (one undo step, one vertexDeleted each).
+    // Returns false (no change) if fewer than 3 vertices would remain.
+    deleteVertices(indices) {
+      const idx = [...new Set(indices)].sort((a, b) => b - a);
+      if (this.points.length - idx.length < 3) return false;
+      idx.forEach((i) => this.points.splice(i, 1));
+      if (this.view.metrics) idx.forEach(() => this.view.metrics.vertexDeleted());
+      this.selMulti = new Set();
+      this._rebuild();
+      this.view.commit && this.view.commit();
+      return true;
+    }
+
     addPoint(pt) { this.points.push([pt.x, pt.y]); this.line.points(this._flat());
       this.view.layer.batchDraw(); }
 

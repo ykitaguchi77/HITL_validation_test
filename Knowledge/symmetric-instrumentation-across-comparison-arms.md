@@ -39,3 +39,13 @@ HITL アノテーション webapp で、ゼロから点を打つ scratch 描画(
 - Experimental_record/20260712.md
 - [HITL/インタラクティブセグメンテーションの効率評価で使われる計測項目(既報サーベイ)](Knowledge/hitl-annotation-efficiency-metrics-from-literature.md)
 - [CVAT風HITLアノーテーションwebappの実装知見](Knowledge/hitl-annotation-webapp-konva.md)
+
+## 追記 (2026-09-20) — 片側のアームで未定義の指標は 0 でなく NaN で保存する
+- 関連: Experimental_record/20260920.md
+- 逆パターン: 手動(提案なし)アームには存在しない指標 `*_correction_dice`(提案 → 最終の修正量)が、クライアントの空 `initial` を
+  そのまま採点して **0 として保存**されていた。0 は「提案を全面的に描き直した」と同じ値なので、automation bias 解析(H3)に
+  手動行が「修正量ゼロ」として混入し得る。修正は backend の `/api/submit` で提案の有無を判定し、手動は `initial=None` → NaN。
+- 一般化: 対称化すべきは「計上経路」だけでなく「**指標の定義域**」。あるアームで意味を持たない列は NaN/None で埋め、
+  0 で埋めない(集計時に区別できなくなる)。混合セッション(手動と提案が同じセッションに混在)では、
+  行ごとにアームが変わるため、この判定を保存時に行う必要がある。
+  → [[first-real-session-column-audit-zero-vs-missing]]

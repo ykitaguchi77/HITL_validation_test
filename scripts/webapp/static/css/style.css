@@ -23,6 +23,11 @@ button:hover { background: #3d3d3d; }
 .panel input, .panel select { padding: 8px; border-radius: 6px; border: 1px solid var(--line);
   background: #1b1b1b; color: var(--fg); font-size: 14px; }
 #start-btn { background: var(--accent); border-color: var(--accent); font-weight: 600; padding: 10px; }
+.who-box { font-size: 18px; padding: 10px 12px; margin: 8px 0; border: 2px solid var(--accent); border-radius: 8px; }
+.who-box strong { font-size: 22px; }
+.code-form { display: flex; gap: 6px; margin-bottom: 8px; }
+.code-form input { flex: 1; font-family: monospace; }
+.link-error { color: #ff3b30; font-weight: bold; }
 #session-list { display: flex; flex-direction: column; gap: 6px; max-height: 360px; overflow-y: auto; }
 .session-btn { text-align: left; padding: 9px 12px; }
 .session-btn.next { background: var(--accent); border-color: var(--accent); font-weight: 600; }
@@ -100,9 +105,37 @@ button:hover { background: #3d3d3d; }
 #confirm-overlay.hidden { display: none; }
 .confirm-box { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
   padding: 16px 22px; box-shadow: 0 10px 34px rgba(0,0,0,.55); text-align: center; }
+#gt-ok { margin-top: 12px; padding: 11px 22px; border-radius: 8px; font-size: 15px; font-weight: 600;
+  cursor: pointer; border: 1px solid var(--accent); background: var(--accent); color: #fff; }
+#gt-ok:disabled { opacity: .45; cursor: wait; }
 .confirm-title { margin: 0 0 14px; font-size: 16px; }
 .confirm-btns { display: flex; gap: 10px; justify-content: center; }
 .confirm-btns button { padding: 11px 20px; border-radius: 8px; font-size: 15px;
   cursor: pointer; border: 1px solid var(--line); color: inherit; background: var(--panel2); }
 #confirm-ok { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
 #confirm-abort { background: #7a2b2b; border-color: #7a2b2b; color: #fff; }
+
+/* Operations panel (context-aware cheat sheet) */
+#ops-panel { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+#ops-panel td { padding: 3px 4px; border-bottom: 1px solid var(--line); vertical-align: top; line-height: 1.35; }
+#ops-panel td.k { white-space: nowrap; color: #ffd166; font-family: ui-monospace, Consolas, monospace; font-size: 11px; padding-right: 6px; }
+#toolbar #help { font-weight: 700; }
+
+/* Tutorial modal */
+.panel.tut { width: min(760px, 94vw); max-height: 92vh; overflow: auto; }
+.tut-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.tut-head h2 { margin: 0; font-size: 18px; }
+.tut-nav { display: flex; justify-content: space-between; align-items: center; margin-top: 14px; gap: 12px; }
+#tut-body { margin-top: 10px; line-height: 1.6; }
+#tut-body .fig { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }
+#tut-body svg { flex: 0 0 280px; width: 280px; height: 200px; background: #101418; border: 1px solid var(--line); border-radius: 6px; }
+#tut-body ul { margin: 6px 0 0 0; padding-left: 20px; }
+#tut-body li { margin: 4px 0; }
+#tut-body kbd { display: inline-block; padding: 1px 6px; border: 1px solid #888; border-bottom-width: 2px; border-radius: 4px;
+  font-family: ui-monospace, Consolas, monospace; font-size: 12px; background: #222; color: #ffd166; }
+#tut-body .note { color: var(--muted); font-size: 12px; margin-top: 8px; }
+
+/* Live performance cues (elapsed timer, click/vertex counters) are hidden from
+   study annotators so the instructions ("usual pace, pixel-accurate") are not
+   undercut by a visible clock; the developer `test` account still sees them. */
+body:not(.dev-metrics) #timer, body:not(.dev-metrics) #metrics-section { display: none; }

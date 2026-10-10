@@ -1,89 +1,97 @@
-"""SegFormer-B1 amodal inference -> initial HITL vector annotations.
+"""Proposal lookup for the n-shot dose-response study (no runtime inference).
 
-Loads a checkpoint (cached per path), runs the 3-channel amodal forward pass on
-a 512x512 RGB crop, then converts the eyelid/iris/pupil masks back to native
-image coordinates as editable polygons / OBB ellipses. Caruncle has no model
-channel, so it is never pre-filled (annotator draws it manually).
+Every (study image, n, seed) proposal of the fixed decoder-LoRA checkpoints is
+precomputed offline into ``outputs/proposals/proposals.json`` by
+``Eyelid_few_shot_HITL/scripts/eval/export_study_proposals.py`` (which imports
+``geometry.masks_to_shapes`` / ``scoring.score_annotation`` from here, so the
+shape format and the proposal-vs-GT metrics are exactly the app's own).
+
+    proposals.json = {
+      version, provenance{...}, n_levels, seeds,
+      images: {filename: {image_id, width, height,
+                proposals: {"n8": {"s1": {shapes: {eyelid:[poly], caruncle:[],
+                                                   iris:[ellipse], pupil:[ellipse]},
+                                          metrics: {eyelid:{dice,assd,...}, ..., mean_dice}}}}}}}
+
+Manual items (n = 0) return EMPTY. Both paths are dict lookups, so there is no
+latency difference an annotator could use to infer the condition.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from functools import lru_cache
 
-import cv2
-import numpy as np
-import torch
-import torch.nn.functional as F
-from transformers import SegformerForSemanticSegmentation, SegformerImageProcessor
+from config import PROPOSALS_JSON
 
-from config import INFER_SIZE, SEGFORMER_BACKBONE
-from geometry import mask_to_polygon, mask_to_ellipse
-
-CHANNELS = ["eyelid", "iris", "pupil"]   # model output channel order
-_DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+EMPTY: dict = {"eyelid": [], "caruncle": [], "iris": [], "pupil": []}
 
 
-@lru_cache(maxsize=9)   # 8 subset models + headroom; avoids reload thrash in interleaved sessions
-def _load(checkpoint_path: str, backbone: str):
-    model = SegformerForSemanticSegmentation.from_pretrained(
-        backbone, num_labels=3, ignore_mismatched_sizes=True
-    ).to(_DEVICE)
-    try:
-        ckpt = torch.load(checkpoint_path, map_location=_DEVICE, weights_only=False)
-    except TypeError:  # older torch without weights_only kwarg
-        ckpt = torch.load(checkpoint_path, map_location=_DEVICE)
-    state = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
-    model.load_state_dict(state)
-    model.eval()
-    processor = SegformerImageProcessor.from_pretrained(
-        backbone, do_resize=False, do_rescale=True, do_normalize=True
-    )
-    return model, processor
+def empty() -> dict:
+    return {k: [] for k in EMPTY}
 
 
-@torch.no_grad()
-def _predict_masks(image_path: str, checkpoint_path: str, backbone: str,
-                   threshold: float = 0.5) -> dict[str, np.ndarray]:
-    """Return {channel: 512x512 uint8 {0,255} mask}."""
-    model, processor = _load(checkpoint_path, backbone)
-    bgr = cv2.imread(image_path)
-    if bgr is None:
-        raise FileNotFoundError(image_path)
-    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-    rgb = cv2.resize(rgb, (INFER_SIZE, INFER_SIZE), interpolation=cv2.INTER_LINEAR)
-    pixel_values = processor(images=rgb, return_tensors="pt")["pixel_values"].to(_DEVICE)
-    logits = model(pixel_values=pixel_values).logits
-    logits = F.interpolate(logits, size=(INFER_SIZE, INFER_SIZE),
-                           mode="bilinear", align_corners=False)
-    probs = torch.sigmoid(logits).squeeze(0).cpu().numpy()
-    return {name: ((probs[c] > threshold) * 255).astype(np.uint8)
-            for c, name in enumerate(CHANNELS)}
+@lru_cache(maxsize=1)
+def _load() -> dict:
+    if not PROPOSALS_JSON.exists():
+        raise FileNotFoundError(
+            f"{PROPOSALS_JSON} not found. Run Eyelid_few_shot_HITL/scripts/eval/export_study_proposals.py")
+    with open(PROPOSALS_JSON, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
-def predict_initial_shapes(image_path: str, checkpoint_path: str,
-                           native_w: int, native_h: int,
-                           backbone: str = SEGFORMER_BACKBONE) -> dict:
-    """HITL initial annotation in NATIVE image coords.
+@lru_cache(maxsize=1)
+def file_sha256() -> str:
+    return hashlib.sha256(PROPOSALS_JSON.read_bytes()).hexdigest()
 
-    Returns {'eyelid':[poly], 'caruncle':[], 'iris':[ellipse], 'pupil':[ellipse]}.
-    Polygon = [[x,y],...]; ellipse = {cx,cy,rx,ry,rotation}.
-    """
-    masks = _predict_masks(image_path, checkpoint_path, backbone)
-    sx, sy = native_w / INFER_SIZE, native_h / INFER_SIZE
-    out: dict = {"eyelid": [], "caruncle": [], "iris": [], "pupil": []}
 
-    # eyelid -> polygon (rescale points to native)
-    poly = mask_to_polygon(masks["eyelid"])
-    if poly:
-        out["eyelid"].append([[x * sx, y * sy] for x, y in poly])
+def proposal_key(filename: str, n: int, seed: int) -> str:
+    return f"{filename}|n{n}|s{seed}"
 
-    # iris / pupil -> OBB ellipse (rescale; native is near-square so use mean scale for radii)
-    s_mean = (sx + sy) / 2.0
-    for name in ("iris", "pupil"):
-        el = mask_to_ellipse(masks[name])
-        if el:
-            out[name].append({
-                "cx": el["cx"] * sx, "cy": el["cy"] * sy,
-                "rx": el["rx"] * s_mean, "ry": el["ry"] * s_mean,
-                "rotation": el["rotation"],
-            })
-    return out
+
+def _entry(filename: str, n: int, seed: int) -> dict | None:
+    img = _load()["images"].get(filename)
+    if not img:
+        return None
+    return img["proposals"].get(f"n{n}", {}).get(f"s{seed}")
+
+
+def get_proposal(filename: str, n: int, seed: int) -> dict:
+    """Initial shapes for the item (deep-copied so callers can mutate)."""
+    if not n:
+        return empty()
+    e = _entry(filename, n, seed)
+    if e is None:
+        raise KeyError(proposal_key(filename, n, seed))
+    return json.loads(json.dumps(e["shapes"]))
+
+
+def get_proposal_metrics(filename: str, n: int, seed: int) -> dict | None:
+    """Precomputed proposal-vs-GT metrics (None for manual items)."""
+    if not n:
+        return None
+    e = _entry(filename, n, seed)
+    return None if e is None else e.get("metrics")
+
+
+def validate(experiment: dict) -> int:
+    """Fail fast at startup: every item with n > 0 (runs + practice) must have
+    its proposal. Returns the number of proposal items checked."""
+    checked, missing = 0, []
+    items = [it for run in experiment.get("runs", {}).values()
+             for s in run["sessions"] for it in s["items"]]
+    items += [it for ps in experiment.get("practice", []) for it in ps["items"]]
+    for it in items:
+        n = it.get("n") or 0
+        if not n:
+            continue
+        checked += 1
+        if _entry(it["filename"], n, it["seed"]) is None:
+            missing.append(proposal_key(it["filename"], n, it["seed"]))
+    if missing:
+        raise RuntimeError(f"{len(missing)} proposals missing in {PROPOSALS_JSON}: {missing[:5]} ...")
+    want = experiment.get("proposals_sha256")
+    if want and want != file_sha256():
+        raise RuntimeError("proposals.json changed since experiment.json was generated "
+                           "(sha256 mismatch) -> re-run scripts/prepare_experiment.py")
+    return checked

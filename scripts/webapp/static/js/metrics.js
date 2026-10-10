@@ -10,7 +10,9 @@
   function blankPerClass() {
     const o = {};
     for (const k of CLASS_KEYS) {
-      o[k] = { clicks: 0, time_sec: 0, vertices_edited: 0 };
+      o[k] = { clicks: 0, time_sec: 0, vertices_edited: 0,
+               vertices_added: 0, vertices_moved: 0, vertices_deleted: 0,
+               shapes_created: 0, shapes_deleted: 0 };
     }
     return o;
   }
@@ -111,13 +113,17 @@
       this._log("click");
     }
 
-    vertexAdded()  { this.vertices_added += 1;  this._clsVertex(); this._log("v+"); }
-    vertexMoved()  { this.vertices_moved += 1;  this._clsVertex(); this._log("v~"); }
-    vertexDeleted(){ this.vertices_deleted += 1; this._clsVertex(); this._log("v-"); }
-    _clsVertex()   { if (this.activeClass) this.per_class[this.activeClass].vertices_edited += 1; }
+    vertexAdded()  { this.vertices_added += 1;  this._clsVertex("vertices_added"); this._log("v+"); }
+    vertexMoved()  { this.vertices_moved += 1;  this._clsVertex("vertices_moved"); this._log("v~"); }
+    vertexDeleted(){ this.vertices_deleted += 1; this._clsVertex("vertices_deleted"); this._log("v-"); }
+    _clsVertex(f)  {
+      const pc = this.activeClass && this.per_class[this.activeClass];
+      if (pc) { pc.vertices_edited += 1; pc[f] += 1; }
+    }
+    _clsShape(f)   { const pc = this.activeClass && this.per_class[this.activeClass]; if (pc) pc[f] += 1; }
 
-    shapeCreated() { this.shapes_created += 1; this._log("s+"); }
-    shapeDeleted() { this.shapes_deleted += 1; this._log("s-"); }
+    shapeCreated() { this.shapes_created += 1; this._clsShape("shapes_created"); this._log("s+"); }
+    shapeDeleted() { this.shapes_deleted += 1; this._clsShape("shapes_deleted"); this._log("s-"); }
     undo() { this.undo_count += 1; this._log("undo"); }
     redo() { this.redo_count += 1; this._log("redo"); }
     zoom() { this.zoom_count += 1; this._log("zoom"); }

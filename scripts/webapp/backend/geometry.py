@@ -13,7 +13,7 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from config import EYELID_XML, IRIS_XML, XML_LABEL_TO_KEY, CLASS_BY_KEY
+from config import EYELID_XML, IRIS_XML, XML_LABEL_TO_KEY, CLASS_BY_KEY, INFER_SIZE
 
 
 # --- CVAT XML parsing ------------------------------------------------------
@@ -136,6 +136,28 @@ def mask_to_ellipse(mask: np.ndarray, min_area: int = 80) -> Optional[dict]:
     return {"cx": float(cx), "cy": float(cy),
             "rx": float(maj) / 2.0, "ry": float(minr) / 2.0,
             "rotation": float(angle)}
+
+
+def masks_to_shapes(masks: dict, native_w: int, native_h: int,
+                    infer_size: int = INFER_SIZE) -> dict:
+    """Model masks ({'eyelid'|'iris'|'pupil': infer_size x infer_size uint8}) ->
+    HITL initial shapes in NATIVE image coords:
+    {'eyelid':[poly], 'caruncle':[], 'iris':[ellipse], 'pupil':[ellipse]}.
+    Polygon = [[x,y],...]; ellipse = {cx,cy,rx,ry,rotation}. This is the single
+    shape-format contract shared by the offline proposal export and the app."""
+    sx, sy = native_w / infer_size, native_h / infer_size
+    out: dict = {"eyelid": [], "caruncle": [], "iris": [], "pupil": []}
+    poly = mask_to_polygon(masks["eyelid"]) if masks.get("eyelid") is not None else None
+    if poly:
+        out["eyelid"].append([[x * sx, y * sy] for x, y in poly])
+    s_mean = (sx + sy) / 2.0   # native is near-square; mean scale for radii
+    for name in ("iris", "pupil"):
+        el = mask_to_ellipse(masks[name]) if masks.get(name) is not None else None
+        if el:
+            out[name].append({"cx": el["cx"] * sx, "cy": el["cy"] * sy,
+                              "rx": el["rx"] * s_mean, "ry": el["ry"] * s_mean,
+                              "rotation": el["rotation"]})
+    return out
 
 
 # --- Dice / IoU ------------------------------------------------------------

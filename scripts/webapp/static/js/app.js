@@ -1,6 +1,8 @@
 /* App orchestrator: blind annotator/session flow, practice GT calibration, submit.
  * Model identity is never shown (blinding). Sessions run in order:
- * 練習 -> Scratch -> Session 1..8; completion persisted in localStorage. */
+ * 練習1 -> 練習2 -> Session 1..6 (mixed manual/proposal items); completion comes from the
+ * server's saved records. Real annotators enter only via their personal link (?t=token);
+ * the server maps the token to the annotator, so nobody can pick someone else's ID. */
 (function (HITL) {
   "use strict";
 
@@ -23,7 +25,8 @@
       this.active = "eyelid";
       this.currentInitial = null;
       this.sessionId = null;
-      this.annotator = "";
+      this.annotator = "";       // annotator name (display, session_id)
+      this.ident = "";           // what the API is called with: "test" or the link token
       this.view = null; this.metrics = null; this.tools = null;
       this._timer = null; this._reviewing = false; this._gtNodes = null;
       this._timing = false;   // an image is actively being timed (not paused/finished)
@@ -37,14 +40,37 @@
     async init() {
       this.config = await api("/api/config");
       this.config.classes.forEach((c) => (this.classByKey[c.key] = c));
-      const asel = $("annotator-select");
-      this.config.annotators.forEach((a) => {
-        const o = document.createElement("option");
-        o.value = a;
-        o.textContent = a === "test" ? "練習用（本番に含めない）" : a;
-        asel.appendChild(o);
-      });
-      asel.onchange = () => this._loadRun();
+      const token = new URLSearchParams(location.search).get("t");
+      if (token) {
+        // personal link: the server decides who this is; show it for confirmation
+        try {
+          this.annotator = (await api(`/api/whoami/${encodeURIComponent(token)}`)).annotator;
+        } catch (e) {
+          $("link-error").textContent = "このリンクは無効です。研究者から届いたリンクをそのまま開いてください。";
+          $("link-error").classList.remove("hidden");
+          $("phase-desc").classList.add("hidden");
+          return;
+        }
+        this.ident = token;
+        $("who-name").textContent = this.annotator;
+        $("who-box").classList.remove("hidden");
+      } else {
+        // no link: functional-test account only (server lists just "test")
+        const asel = $("annotator-select");
+        this.config.annotators.forEach((a) => {
+          const o = document.createElement("option");
+          o.value = a;
+          o.textContent = a === "test" ? "機能テスト用（本番に含めない）" : a;
+          asel.appendChild(o);
+        });
+        this.annotator = this.ident = asel.value;
+        $("code-form").onsubmit = (ev) => {
+          ev.preventDefault();
+          const code = $("code-input").value.trim();
+          if (code) location.search = `?t=${encodeURIComponent(code)}`;
+        };
+        $("nolink-box").classList.remove("hidden");
+      }
 
       // Pause timing + metrics whenever the window is hidden or loses focus (the
       // annotator opened another window), and resume on return. Covers tab switch,
@@ -59,30 +85,14 @@
 
     /* ---- setup: annotator -> session list ---- */
     async _loadRun() {
-      this.annotator = $("annotator-select").value;
-      this.run = await api(`/api/run/${this.annotator}`);
+      this.run = await api(`/api/run/${encodeURIComponent(this.ident)}`);
       this._renderSessionList();
     }
 
-    _doneKey() { return `hitl_done_${this.annotator}`; }
+    // completed attempts per session, counted by the server from the saved records
+    // (so redo = next attempt, and progress follows the annotator across browsers)
     _doneSet() {
-      try { return new Set(JSON.parse(localStorage.getItem(this._doneKey()) || "[]")); }
-      catch (e) { return new Set(); }
-    }
-    _markDone(key) {
-      const s = this._doneSet(); s.add(key);
-      localStorage.setItem(this._doneKey(), JSON.stringify([...s]));
-    }
-    // completed-attempt counter per session (so redo = next attempt; recorded in data)
-    _attemptsKey() { return `hitl_attempts_${this.annotator}`; }
-    _attempts() {
-      try { return JSON.parse(localStorage.getItem(this._attemptsKey()) || "{}"); }
-      catch (e) { return {}; }
-    }
-    _attemptCount(key) { return this._attempts()[key] || 0; }
-    _incAttempt(key) {
-      const a = this._attempts(); a[key] = (a[key] || 0) + 1;
-      localStorage.setItem(this._attemptsKey(), JSON.stringify(a));
+      return new Set(this.run.sessions.filter((s) => s.completed > 0).map((s) => s.key));
     }
 
     _renderSessionList() {
@@ -123,13 +133,23 @@
       // concurrent startSession -> two loadCurrent -> the prefill rendered TWICE
       // (2 shapes per class). Re-entrancy guard + hiding the list both prevent it.
       if (this._starting) return;
-      const completed = this._attemptCount(s.key);
+      const completed = s.completed || 0;
       const attempt = completed + 1;   // this run's attempt number (1 = first)
       if (this._doneSet().has(s.key) && !s.is_practice) {
         if (!confirm(`「${s.label}」は完了済みです（${completed}回完了）。\nやり直しますか？\n`
           + `これは ${attempt} 回目の試行として新たに記録されます（前回の記録は残ります）。`)) return;
       }
+      // stale frontend? (tab kept open across a server update) -> reload before starting
+      try {
+        const cfg = await api("/api/config");
+        if (cfg.app_version && this.config.app_version && cfg.app_version !== this.config.app_version) {
+          alert("アプリが更新されています。ページを再読み込みしてからセッションを開始してください。");
+          location.reload(); return;
+        }
+      } catch (e) { /* offline check is best-effort */ }
       this._starting = true;
+      // timer + live counters only for the developer test account (see style.css)
+      document.body.classList.toggle("dev-metrics", this.annotator === "test");
       $("setup").classList.add("hidden");   // hide the session list at once (no 2nd click)
       $("app").classList.remove("hidden");
       try {
@@ -138,13 +158,15 @@
       const ts = new Date();
       const stamp = `${ts.getFullYear()}${pad2(ts.getMonth() + 1)}${pad2(ts.getDate())}-${pad2(ts.getHours())}${pad2(ts.getMinutes())}${pad2(ts.getSeconds())}`;
       this.sessionId = `${this.annotator}_${s.key}_a${attempt}_${stamp}`;
-      this.sessionData = await api(`/api/session/${this.annotator}/${s.key}`);
+      this.sessionData = await api(`/api/session/${encodeURIComponent(this.ident)}/${s.key}`);
       this.idx = 0; this._reviewing = false;
 
       $("phase-label").textContent = s.label + (attempt > 1 ? `（${attempt}回目）` : "");
       $("hitl-note").textContent = this.isPractice
-        ? "練習: 提出後に正解(GT)を点線表示します（解析対象外）"
-        : (this.isHitl ? "予測を修正中（モデルは非表示）" : "Scratch: ゼロから作成");
+        ? (s.key === "p_hitl"
+            ? "練習: 提案が大体合っていても、ピクセル単位で模範解答と同じになるまで直す。提出後に模範解答を点線表示（解析対象外）"
+            : "練習: 完成後に模範解答を点線表示します。微妙な部分のニュアンスを確認してください（解析対象外）")
+        : (this.isHitl ? "提案がある画像は修正、無い画像はゼロから作成。どちらもピクセル単位で模範解答を目指す（条件は非表示）" : "Scratch: ゼロから作成");
       $("submit-btn").textContent = "提出して次へ →";
 
       // create canvas/tools/metrics once, then reuse across sessions (avoids dup listeners)
@@ -155,8 +177,15 @@
         this.tools = new HITL.ToolController(this.view, this.metrics, this);
         this._buildSidebar();
         this._bindToolbar();
+        // the ops panel mirrors tool/selection state; most transitions set a hint
+        // (-> updateOps) but shape (de)selection does not, so also poll cheaply
+        setInterval(() => this.updateOps(), 400);
       }
+      await this._showIntro(s);          // instructions BEFORE the first image (no timing yet)
       await this.loadCurrent();
+      // first session for this annotator: walk through the controls once (timer is
+      // paused while the tutorial is open; reopen any time with the ? button)
+      if (!this._tutorialSeen()) this.showTutorial(false);
       } finally {
         this._starting = false;
       }
@@ -168,7 +197,7 @@
       const img = this.sessionData.images[this.idx];
       $("progress").textContent = `${this.idx + 1} / ${this.sessionData.images.length}`;
       // block input + hide the image until the prefill is ready (no mid-input pop-in)
-      this._setLoading(true, this.isHitl ? "推論中… しばらくお待ちください" : "読み込み中…");
+      this._setLoading(true, "読み込み中…");
       this._confirming = false; this._setConfirmOverlay(false);
       $("submit-btn").textContent = "提出して次へ →"; $("revise-btn").classList.add("hidden");
       this._clearGT();
@@ -176,22 +205,27 @@
       if (seq !== this._loadSeq) return;   // a newer load started; don't render this one
 
       this.currentInitial = null;
-      if (this.isHitl) {   // practice + HITL have a prefill; scratch does not
+      let hasPrefill = false;
+      if (this.isHitl) {   // mixed sessions: the server returns an EMPTY initial for manual items
         const res = await api("/api/predict", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ annotator: this.annotator, session_key: this.sessionKey,
+          body: JSON.stringify({ annotator: this.ident, session_key: this.sessionKey,
             image_id: img.image_id }),
         });
-        if (seq !== this._loadSeq) return;   // superseded during inference -> skip render
+        if (seq !== this._loadSeq) return;   // superseded during load -> skip render
         this.currentInitial = res.initial;
+        hasPrefill = Object.values(res.initial || {}).some((a) => a && a.length);
         this._renderInitial(res.initial);
       }
       this.tools.pushInitial();
-      this.tools.setTool(this.isHitl ? "select" : "polygon");
+      this.tools.setTool(hasPrefill ? "select" : "polygon");
       this.setActiveClass("eyelid");
       // start effort timing ONLY now (after image+prefill ready) so inference/load
       // latency is not counted as annotation time
       this.metrics.reset();
+      // reset() clears the metrics' active class -> re-apply so the default class
+      // (eyelid) gets its per-class time / clicks / vertex counts from the start
+      this.metrics.setActiveClass(this.active);
       this._setLoading(false);
       this._paused = false;
       this._timing = true;
@@ -239,7 +273,15 @@
       this._setConfirmOverlay(true);
       $("submit-btn").textContent = "確認OK・次へ →";
       $("revise-btn").classList.remove("hidden");
-      if (this.isPractice) this._showPracticeGT();
+      if (this.isPractice) {
+        // practice: the only way on is the OK next to the GT, enabled once it is
+        // drawn (so the effort rating cannot pop up over a GT not yet looked at)
+        $("submit-btn").classList.add("hidden");
+        $("confirm-msg").textContent = "模範解答を読み込み中…";
+        $("gt-ok").disabled = true;
+        $("gt-ok").classList.remove("hidden");
+        this._showPracticeGT();
+      }
     }
 
     // class metas that have no shape yet (submission requires all 3)
@@ -249,8 +291,9 @@
     }
 
     _setConfirmOverlay(on) {
-      const o = $("confirm-overlay");
-      if (o) o.classList.toggle("hidden", !on);
+      $("confirm-overlay").classList.toggle("hidden", !on);
+      $("confirm-msg").textContent = "内容を確認して、右上の［確認OK・次へ／修正／中断］を選んでください";
+      if (!on) { $("gt-ok").classList.add("hidden"); $("submit-btn").classList.remove("hidden"); }
     }
     _exitConfirm() {
       this._confirming = false;
@@ -283,15 +326,20 @@
         const annotation = this.view.getAnnotation();
         const res = await api("/api/practice_gt", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ annotator: this.annotator, session_key: this.sessionKey,
+          body: JSON.stringify({ annotator: this.ident, session_key: this.sessionKey,
             image_id: img.image_id, annotation }),
         });
         if (!this._confirming) return;   // user already left the confirmation
         this._showGT(res.gt);
         const per = res.scores ? Object.entries(res.scores)
           .map(([k, v]) => `${k} ${v}`).join("  ") : "";
-        $("status").textContent = `正解(GT)=点線  mean Dice ${res.mean_dice}  [${per}]`;
-      } catch (e) { /* GT display is best-effort */ }
+        $("status").textContent = `模範解答=点線  mean Dice ${res.mean_dice}  [${per}]`;
+        $("confirm-msg").textContent = "点線＝模範解答。自分の線とのずれを確認したら OK（直すなら右上の［修正］）";
+      } catch (e) {   // GT display is best-effort: never block the session on it
+        if (!this._confirming) return;
+        $("confirm-msg").textContent = "模範解答を表示できませんでした。OK で次へ進めます";
+      }
+      $("gt-ok").disabled = false;
     }
 
     // 確認OK -> 苦痛の記録(Paas) -> save. Metrics stay paused since 提出, so the
@@ -304,7 +352,7 @@
       $("status").textContent = "保存中…";
       await api("/api/submit", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: this.sessionId, annotator: this.annotator,
+        body: JSON.stringify({ session_id: this.sessionId, annotator: this.ident,
           session_key: this.sessionKey, image_id: img.image_id, attempt: this.attempt,
           annotation, initial: this.currentInitial, metrics, effort }),
       });
@@ -338,8 +386,6 @@
       this._stopTimer();
       this._timing = false;
       this._clearGT();
-      this._incAttempt(this.sessionKey);   // count this completed attempt
-      this._markDone(this.sessionKey);
       $("app").classList.add("hidden");
       $("setup").classList.remove("hidden");
       $("phase-desc").textContent = `「${$("phase-label").textContent}」完了。次のセッションを選んでください。`;
@@ -355,7 +401,7 @@
       this._stopTimer(); this._timing = false; this._reviewing = false;
       try {
         await api("/api/abort", { method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session_id: this.sessionId }) });
+          body: JSON.stringify({ session_id: this.sessionId, annotator: this.ident }) });
       } catch (e) { /* ignore */ }
       $("app").classList.add("hidden");
       $("setup").classList.remove("hidden");
@@ -433,7 +479,8 @@
         (b.onclick = () => this.tools.setTool(b.dataset.tool)));
       $("undo").onclick = () => this.tools.undo();
       $("redo").onclick = () => this.tools.redo();
-      $("delete").onclick = () => this.tools.deleteSelected();
+      $("delete").onclick = () => this.tools.deleteContext();
+      $("help").onclick = () => this.showTutorial(true);
       $("fit").onclick = () => this.view.fit();
       $("maximize").onclick = () => this.view.maximize();
       const fillBtn = $("fill");
@@ -449,6 +496,7 @@
       br.oninput = applyBr; ct.oninput = applyCt;
       $("reset-adjust").onclick = () => { br.value = 0; ct.value = 0; applyBr(); applyCt(); };
       $("submit-btn").onclick = () => this.submit();
+      $("gt-ok").onclick = () => this._confirmOk();
       $("revise-btn").onclick = () => this._confirmEdit();
       $("abort-btn").onclick = () => this.abort();
     }
@@ -462,7 +510,113 @@
       this._renderMetrics();
     }
 
-    setHint(t) { $("hint").textContent = t; }
+    setHint(t) { $("hint").textContent = t; this.updateOps(); }
+
+    /* ---- context-aware operations panel (sidebar) ---- */
+    updateOps() {
+      const el = $("ops-panel");
+      if (!el || !this.tools) return;
+      const t = this.tools;
+      const rows = [];
+      const add = (k, v) => rows.push([k, v]);
+      if (t.draft) {
+        add("クリック / Space", "点を打つ");
+        add("最初の点 or ダブルクリック / Enter", "閉じて確定");
+        add("Esc", "描画を取消");
+      } else if (t.extend) {
+        add("クリック / Space", "点を追加");
+        add("ダブルクリック / Enter", "追加を確定");
+        add("Esc", "追加を取消");
+      } else if (t.tool === "polygon") {
+        add("クリック", "1点目を打つ（まぶた）");
+        add("ドラッグ", "画像を移動");
+        add("V", "選択ツールへ");
+      } else if (t.tool === "ellipse") {
+        add("ドラッグ", "楕円を作成（虹彩・瞳孔）");
+        add("作成後", "選択ツールでハンドルを回転・拡縮");
+      } else if (t.tool === "pan") {
+        add("ドラッグ", "画像を移動");
+        add("ホイール", "拡大・縮小");
+      } else if (t.vselMulti) {
+        add("ドラッグ / 矢印キー", `選択中の ${t.vselMulti.idx.length} 点をまとめて移動`);
+        add("Delete", "選択中の点をまとめて削除");
+        add("Esc", "選択解除");
+      } else if (t.vsel) {
+        add("ドラッグ / 矢印キー", "この頂点を移動");
+        add("Backspace / Delete", "この頂点を削除");
+        add("Esc", "選択解除");
+      } else if (t.selected && t.selected.kind === "polygon") {
+        add("頂点をドラッグ", "移動（クリックで選んで矢印キーでも 1px ずつ）");
+        add("辺の中点をドラッグ", "点を追加");
+        add("頂点クリック → Backspace", "点を削除（Alt+クリックでも）");
+        add("Ctrl+ドラッグで囲む", "複数の点を選択 → まとめて移動 / Delete で削除");
+        add("Shift+クリック", "点を続けて追加（ダブルクリックで確定）");
+        add("🗑 / Delete", "図形ごと削除して描き直す");
+      } else if (t.selected && t.selected.kind === "ellipse") {
+        add("楕円をドラッグ", "移動");
+        add("ハンドル", "拡大縮小・回転（周辺視では傾ける）");
+        add("矢印キー", "1px 移動");
+        add("🗑 / Delete", "削除して描き直す");
+      } else {
+        add("右のクラスタブ", "編集する対象を選ぶ");
+        add("ドラッグ", "画像を移動");
+        add("ホイール", "拡大・縮小");
+      }
+      add("Ctrl+Z / Ctrl+Y", "元に戻す / やり直し");
+      const html = rows.map((r) => `<tr><td class="k">${r[0]}</td><td>${r[1]}</td></tr>`).join("");
+      if (el.dataset.html !== html) { el.innerHTML = html; el.dataset.html = html; }
+    }
+
+    /* ---- session intro (教示) ---- */
+    _showIntro(s) {
+      const o = $("intro-overlay");
+      const html = HITL.SESSION_INTRO && HITL.SESSION_INTRO(s);
+      if (!o || !html) return Promise.resolve();
+      $("intro-title").textContent = s.label;
+      $("intro-body").innerHTML = html;
+      o.classList.remove("hidden");
+      return new Promise((resolve) => {
+        $("intro-ok").onclick = () => { o.classList.add("hidden"); resolve(); };
+      });
+    }
+
+    /* ---- tutorial modal ---- */
+    _tutKey() { return `hitl_tut_seen_${this.annotator}`; }
+    showTutorial(manual) {
+      const o = $("tutorial-overlay");
+      if (!o) return;
+      const steps = HITL.TUTORIAL_STEPS;
+      let i = 0;
+      const wasTiming = this._timing && !this._paused;
+      if (wasTiming) this._pauseTiming();
+      const render = () => {
+        const s = steps[i];
+        $("tut-title").textContent = `${i + 1} / ${steps.length}　${s.title}`;
+        $("tut-body").innerHTML = s.html;
+        $("tut-prev").disabled = i === 0;
+        $("tut-next").textContent = i === steps.length - 1 ? "閉じる" : "次へ →";
+      };
+      const close = () => {
+        o.classList.add("hidden");
+        try { localStorage.setItem(this._tutKey(), "1"); } catch (e) { /* ignore */ }
+        if (wasTiming) this._resumeTiming();
+        document.removeEventListener("keydown", onKey, true);
+      };
+      const onKey = (e) => {
+        if (e.key === "Escape") { e.stopPropagation(); close(); }
+        else if (e.key === "ArrowRight") { e.stopPropagation(); if (i < steps.length - 1) { i++; render(); } }
+        else if (e.key === "ArrowLeft") { e.stopPropagation(); if (i > 0) { i--; render(); } }
+      };
+      $("tut-prev").onclick = () => { if (i > 0) { i--; render(); } };
+      $("tut-next").onclick = () => { if (i < steps.length - 1) { i++; render(); } else close(); };
+      $("tut-close").onclick = close;
+      document.addEventListener("keydown", onKey, true);
+      render();
+      o.classList.remove("hidden");
+    }
+    _tutorialSeen() {
+      try { return localStorage.getItem(this._tutKey()) === "1"; } catch (e) { return false; }
+    }
     classMeta(key) { return this.classByKey[key]; }
     activeClass() { return this.active; }
 

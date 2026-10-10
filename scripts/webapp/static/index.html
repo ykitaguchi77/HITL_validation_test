@@ -12,12 +12,27 @@
   <div id="setup" class="overlay">
     <div class="panel">
       <h1>HITL アノテーション実験（盲検）</h1>
-      <label>アノテータ
-        <select id="annotator-select"></select>
-      </label>
-      <p id="phase-desc" class="muted">セッションを選んで開始します。練習 → Scratch → Session 1〜8 の順です。</p>
+      <!-- personal link (?t=...): identity fixed by the server, shown for confirmation -->
+      <div id="who-box" class="who-box hidden">
+        アノテータ: <strong id="who-name"></strong>
+        <div class="muted small">ご本人でない場合は作業せずにこのページを閉じ、研究者に連絡してください。</div>
+      </div>
+      <!-- no link: functional test only; real annotators enter via their own link -->
+      <div id="nolink-box" class="hidden">
+        <label>アノテータ
+          <select id="annotator-select"></select>
+        </label>
+        <p class="muted small">本番は研究者から届いた<strong>ご自身専用のリンク</strong>から開いてください。
+          URL が変わった場合はリンク末尾の個人コード（<code>?t=</code> の後ろ）を入力:</p>
+        <form id="code-form" class="code-form">
+          <input id="code-input" autocomplete="off" spellcheck="false" placeholder="個人コード" />
+          <button type="submit">開く</button>
+        </form>
+      </div>
+      <p id="link-error" class="link-error hidden"></p>
+      <p id="phase-desc" class="muted">セッションを選んで開始します。練習1 → 練習2 → Session 1〜6 の順です。</p>
       <div id="session-list"></div>
-      <p class="muted small">各セッション10枚。順番に行います（前のセッション完了で次が開きます）。間で休憩可。
+      <p class="muted small">本番は各セッション10枚（AIの提案がある画像と無い画像が混ざります）。順番に行います（前のセッション完了で次が開きます）。間で休憩可。
         補正対象モデルは表示されません（盲検）。</p>
     </div>
   </div>
@@ -52,18 +67,25 @@
         <button id="fit" title="全体表示 (F)">⤢</button>
         <button id="maximize" title="ウィンドウいっぱいに最大化（画像で画面を埋める）">⛶</button>
         <button id="fill" title="塗りつぶし表示の切替">🎨</button>
+        <hr />
+        <button id="help" title="操作チュートリアル（開いている間は計測を一時停止）">?</button>
       </nav>
 
       <!-- Canvas -->
       <main id="canvas-wrap"><div id="canvas"></div>
         <div id="hint" class="hint"></div>
-        <div id="loading-overlay" class="hidden">推論中…</div>
+        <div id="loading-overlay" class="hidden">読み込み中…</div>
         <div id="pause-overlay" class="hidden">⏸ 一時停止中（ウィンドウが非アクティブ）<br>このウィンドウに戻ると自動的に再開します</div>
         <!-- Pre-submit confirmation: 提出 → 確認画面 → 苦痛の記録. Semi-transparent
              blocker so the annotation (and, for practice, the GT) stays visible;
-             the 確認OK / 修正 / 中断 actions live in the top-right buttons. -->
+             the 確認OK / 修正 / 中断 actions live in the top-right buttons. Practice:
+             the GT is shown here and only the OK in this box moves on (enabled once
+             the GT has loaded), so the effort rating never covers an unseen GT. -->
         <div id="confirm-overlay" class="hidden">
-          <div class="confirm-box">内容を確認して、右上の［確認OK・次へ／修正／中断］を選んでください</div>
+          <div class="confirm-box">
+            <div id="confirm-msg"></div>
+            <button id="gt-ok" class="hidden">OK（模範解答を確認した）→</button>
+          </div>
         </div>
       </main>
 
@@ -78,8 +100,12 @@
             <input type="range" id="contrast" min="-100" max="100" value="0" /></label>
           <button id="reset-adjust" class="small">明るさ/コントラストをリセット</button>
         </div>
-        <h2>計測 (現在の画像)</h2>
-        <table id="metrics-table" class="mono small"></table>
+        <h2>操作（今できること）</h2>
+        <table id="ops-panel" class="ops small"></table>
+        <div id="metrics-section">
+          <h2>計測 (現在の画像)</h2>
+          <table id="metrics-table" class="mono small"></table>
+        </div>
         <p class="muted small" id="hitl-note"></p>
       </aside>
     </div>
@@ -95,6 +121,29 @@
     </div>
   </div>
 
+  <!-- Session intro (instructions shown before the first image; timer not yet running) -->
+  <div id="intro-overlay" class="overlay hidden">
+    <div class="panel tut">
+      <h2 id="intro-title"></h2>
+      <div id="intro-body"></div>
+      <div class="tut-nav"><span></span><button id="intro-ok">開始する →</button></div>
+    </div>
+  </div>
+
+  <!-- Operations tutorial (first session per annotator, and via the ? button) -->
+  <div id="tutorial-overlay" class="overlay hidden">
+    <div class="panel tut">
+      <div class="tut-head"><h2 id="tut-title"></h2><button id="tut-close" class="small">✕</button></div>
+      <div id="tut-body"></div>
+      <div class="tut-nav">
+        <button id="tut-prev" class="small">← 前へ</button>
+        <span class="muted small">← → キーでも移動できます</span>
+        <button id="tut-next">次へ →</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/tutorial.js"></script>
   <script src="/js/metrics.js"></script>
   <script src="/js/canvas.js"></script>
   <script src="/js/tools.js"></script>

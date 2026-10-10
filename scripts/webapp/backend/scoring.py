@@ -54,6 +54,70 @@ def boundary_metrics(sub_mask: np.ndarray, gt_mask: np.ndarray,
             "boundary_f1": f1}
 
 
+# --- ellipse-parameter metrics (iris / pupil) --------------------------------
+# Conventions from the iris-localisation / pupillometry literature: centre error
+# (px), axis (radius) errors, rotation error of the major axis, plus the axis-
+# aligned horizontal / vertical diameters (the vertical iris diameter is the
+# occluded, interpreted part of an amodal ellipse).
+HVID_MM = 11.7   # mean horizontal visible iris diameter, used as the mm scale
+
+
+def _ellipse_geom(e: dict) -> dict:
+    rx, ry, rot = float(e["rx"]), float(e["ry"]), float(e.get("rotation", 0.0))
+    major, minor = max(rx, ry), min(rx, ry)
+    th = np.radians(rot if rx >= ry else rot + 90.0)      # orientation of the major axis
+    c, s_ = np.cos(np.radians(rot)), np.sin(np.radians(rot))
+    return {"cx": float(e["cx"]), "cy": float(e["cy"]), "major": major, "minor": minor,
+            "theta_deg": float(np.degrees(th) % 180.0),
+            "hdiam": 2.0 * float(np.hypot(rx * c, ry * s_)),   # extent along image x
+            "vdiam": 2.0 * float(np.hypot(rx * s_, ry * c))}   # extent along image y
+
+
+def ellipse_metrics(sub: list, gt: list) -> dict:
+    """Parameter errors between the first submitted and the first GT ellipse.
+    None-valued when either side has no ellipse."""
+    keys = ("center_err", "center_dx", "center_dy", "major_err", "minor_err", "rot_err",
+            "hdiam_err", "vdiam_err", "sub_hdiam", "sub_vdiam", "gt_hdiam", "gt_vdiam")
+    if not sub or not gt:
+        return {k: None for k in keys}
+    a, b = _ellipse_geom(sub[0]), _ellipse_geom(gt[0])
+    d_th = abs(a["theta_deg"] - b["theta_deg"]) % 180.0
+    d_th = min(d_th, 180.0 - d_th)
+    return {"center_err": float(np.hypot(a["cx"] - b["cx"], a["cy"] - b["cy"])),
+            "center_dx": a["cx"] - b["cx"], "center_dy": a["cy"] - b["cy"],
+            "major_err": a["major"] - b["major"], "minor_err": a["minor"] - b["minor"],
+            "rot_err": float(d_th),
+            "hdiam_err": a["hdiam"] - b["hdiam"], "vdiam_err": a["vdiam"] - b["vdiam"],
+            "sub_hdiam": a["hdiam"], "sub_vdiam": a["vdiam"], "gt_hdiam": b["hdiam"], "gt_vdiam": b["vdiam"]}
+
+
+def _lid_margins_at(eyelid_mask: np.ndarray, x: float):
+    """(top_y, bottom_y) of the eyelid mask in the column through x, or None."""
+    h, w = eyelid_mask.shape
+    xi = int(round(x))
+    if xi < 0 or xi >= w:
+        return None
+    col = np.flatnonzero(eyelid_mask[:, xi] > 0)
+    return (float(col[0]), float(col[-1])) if len(col) else None
+
+
+def clinical_indices(eyelid_mask: np.ndarray, pupil: list, mm_per_px: float | None) -> dict:
+    """MRD1 / MRD2 / PFH along the vertical through the pupil centre (px, and mm if a scale is given)."""
+    out = {"mrd1_px": None, "mrd2_px": None, "pfh_px": None, "mrd1_mm": None, "mrd2_mm": None, "pfh_mm": None}
+    if not pupil:
+        return out
+    cx, cy = float(pupil[0]["cx"]), float(pupil[0]["cy"])
+    m = _lid_margins_at(eyelid_mask, cx)
+    if m is None:
+        return out
+    top, bot = m
+    out.update({"mrd1_px": cy - top, "mrd2_px": bot - cy, "pfh_px": bot - top})
+    if mm_per_px:
+        out.update({"mrd1_mm": (cy - top) * mm_per_px, "mrd2_mm": (bot - cy) * mm_per_px,
+                    "pfh_mm": (bot - top) * mm_per_px})
+    return out
+
+
 def score_annotation(image_name: str, submitted: dict, native_w: int, native_h: int,
                      initial: dict | None = None) -> dict:
     """Compute per-class quality (vs GT) and correction (vs model initial).
@@ -84,6 +148,9 @@ def score_annotation(image_name: str, submitted: dict, native_w: int, native_h: 
 
         # boundary/surface accuracy (all classes): what overlap Dice/IoU misses.
         rec.update(boundary_metrics(sub_mask, gt_mask))
+        # ellipse parameters (iris / pupil): centre / axis / rotation / diameter errors
+        if kind == "ellipse":
+            rec.update(ellipse_metrics(submitted.get(key, []), gt.get(key, [])))
 
         # HITL correction: how far the final moved from the model's initial prediction.
         if initial is not None:
@@ -101,9 +168,28 @@ def score_annotation(image_name: str, submitted: dict, native_w: int, native_h: 
             dices.append(dice)
             ious.append(iou)
 
+    # clinical indices (MRD1 / MRD2 / PFH) from eyelid outline + pupil centre; the mm
+    # scale comes from the GT iris horizontal diameter (HVID ~ 11.7 mm) for BOTH sides
+    # so the comparison is not confounded by the submitted iris size
+    gt_iris = gt.get("iris", [])
+    mm_per_px = (HVID_MM / _ellipse_geom(gt_iris[0])["hdiam"]) if gt_iris else None
+    sub_lid = rasterize_class(submitted.get("eyelid", []), "polygon", h, w)
+    gt_lid = rasterize_class(gt.get("eyelid", []), "polygon", h, w)
+    clin_sub = clinical_indices(sub_lid, submitted.get("pupil", []), mm_per_px)
+    clin_gt = clinical_indices(gt_lid, gt.get("pupil", []), mm_per_px)
+    clinical = {"hvid_px_gt": _ellipse_geom(gt_iris[0])["hdiam"] if gt_iris else None,
+                "mm_per_px": mm_per_px}
+    for k in ("mrd1", "mrd2", "pfh"):
+        clinical[f"{k}_px"] = clin_sub[f"{k}_px"]
+        clinical[f"{k}_mm"] = clin_sub[f"{k}_mm"]
+        clinical[f"{k}_gt_mm"] = clin_gt[f"{k}_mm"]
+        clinical[f"{k}_err_mm"] = (clin_sub[f"{k}_mm"] - clin_gt[f"{k}_mm"]
+                                   if clin_sub[f"{k}_mm"] is not None and clin_gt[f"{k}_mm"] is not None else None)
+
     return {
         "per_class": per_class,
         "mean_dice": float(np.mean(dices)) if dices else 1.0,
         "mean_iou": float(np.mean(ious)) if ious else 1.0,
         "native_size": [w, h],
+        "clinical": clinical,
     }

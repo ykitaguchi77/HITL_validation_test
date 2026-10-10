@@ -27,3 +27,12 @@ Playwright/実API 検証のために立てた開発サーバー(uvicorn 等)を�
 
 ## 関連リンク
 - Experimental_record/20260713.md
+
+## 追記 (2026-09-19)
+- 参照: Experimental_record/20260919.md
+- 例外: **ユーザーに手動テストしてもらうために立てたサーバは、意図的に起動したまま終了する**(Claude 側で停止するとユーザーが触れない)。
+  その場合は Experimental_record に「バックグラウンドタスク ID・ポート・認証の有無・停止手順」を明記し、
+  **次セッションの最初の残件として「サーバ停止」を書いておく**(停止漏れが「放置」ではなく「引き継ぎ」になる)。
+- 起動確認は `curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/api/config` → 200 で行い、起動ログの
+  `[proposals] N proposal items verified` / `[auth] WARNING ... access control DISABLED` を確認して「ローカル専用・トンネル公開不可」を
+  ユーザーへの案内に含める。

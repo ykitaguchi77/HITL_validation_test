@@ -1,415 +1,316 @@
-"""Generate scripts/webapp/config/experiment.json for the BLIND, Latin-square,
-interleaved HITL study.
+"""Generate scripts/webapp/config/experiment.json (v2) for the BLIND n-shot
+dose-response HITL study.
 
-Design (see plan): 9 conditions = scratch + 8 HITL models (seg100..seg2500).
-90 patient-safe images (disjoint from training) form 9 gaze-balanced blocks
-(7 frontal + 3 peripheral each). A 3x9 cyclic Latin square maps
-(annotator, block) -> condition so image difficulty is balanced across the 3
-annotators. Per annotator the run is baked: session 0 = scratch (fixed first,
-a clean baseline before any model exposure); sessions 1..8 = the 8 HITL blocks'
-80 images repartitioned into condition-mixed, gaze-balanced, blind sessions of
-10 (shuffled slot order). A separate ~5-image practice set (3 frontal + 2
-peripheral, disjoint from the 90 and from training) warms up tool familiarity
-(GT revealed after each practice submission; excluded from analysis).
-Two trailing repeat sessions measure reproducibility / order effects: a blind
-HITL repeat ("Session 9", 10 already-seen HITL images, same hidden model) and a
-final "Scratch (2回目)" that re-presents the 10 session-0 scratch images so the
-scratch baseline is also measured AFTER tool familiarity (pre/post learning
-effect on the same images; scratch is unblinded so its label is explicit).
+Design (see ~/.claude/plans and outputs/docs/analysis_plan.md v2):
+  * Conditions = 8 proposal levels n ∈ {1,2,4,...,128} (fixed structure-specific
+    SAM2 decoder-LoRA checkpoints, sequential 1-epoch-per-image warm start, 3
+    training-order seeds) + manual (n = 0). Condition SLOTS = the 8 n-levels plus
+    k manual slots (scripts/study_design.py: A annotators -> S slots, k = S-8).
+  * Study images = S groups x G images (each group gaze-balanced n_f F + n_p P).
+    Annotator a works group g under slot[(g + (S/A)*a) mod S]: every image is
+    seen by all A annotators under A DISTINCT slots, and is annotated manually
+    exactly k*A/S times (A=6: 12 slots, 60 images, manual x2 per image).
+  * Per annotator: n_sessions sessions of session_size (10) images, each holding
+    one image of 10 distinct slots (the S - 10 omitted slots rotate so every slot
+    is omitted equally often and manual items per session differ by <= 1;
+    study_design.session_slots); order shuffled; n / seed hidden. Within a group
+    the peripheral images are staggered across its sessions so each session's
+    gaze mix is as even as possible. Seeds rotate so each (annotator, n) cell is
+    split as evenly as possible over the 3 seeds and each n is balanced overall.
+  * Proposals are PRECOMPUTED (outputs/proposals/proposals.json); this script
+    verifies every item has one and that the training orders / model-eval set
+    are patient-disjoint from the study images.
+  * Practice: 2 manual + 3 proposal images (n = 4/16/64, seed 0), GT shown,
+    excluded from analysis, disjoint from the study images.
 
-Gaze is auto-classified by de-baselined iris eccentricity (see iris_offset).
-patient_id = filename prefix before first '-'. Test pool = patients whose min
-annotated image_id >= TEST_START, so no test patient appears in any training set.
-
-Run:  python scripts/prepare_experiment.py
+Run:  python scripts/prepare_experiment.py [--annotators 6]
 """
 from __future__ import annotations
 
+import argparse
+import hashlib
 import json
 import random
 import sys
-import xml.etree.ElementTree as ET
-from collections import OrderedDict, defaultdict
-from itertools import zip_longest
+from collections import Counter, defaultdict
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / "webapp" / "backend"))
-from config import (EXPERIMENT_JSON, CONFIG_DIR, IMAGES_DIR, EYELID_XML,  # noqa: E402
-                    SEGFORMER_BACKBONE)
-from geometry import get_gt_annotation  # noqa: E402  (parses eyelid + iris GT)
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / "scripts" / "webapp" / "backend"))
+from study_design import design_params, slot_of, session_slots, MANUAL, SEEDS  # noqa: E402
+from config import EXPERIMENT_JSON, CONFIG_DIR, STUDY_IMAGES_JSON, PROPOSALS_JSON  # noqa: E402
 
 SEED = 42
-TEST_START = 2500     # test pool lower bound (image_id); train patients have min id < this
-TEST_END = 2999       # manual-annotation upper bound
-N_BLOCKS = 9          # = number of conditions
-N_PER_SESSION = 10
-N_FRONTAL = 7         # frontal images per block / per session
-N_PERIPHERAL = 3      # peripheral images per block / per session
-# real annotator identities; order = Latin-square rows. A "test"/practice
-# pseudo-annotator is added by the backend and shown first in the UI.
-ANNOTATOR_NAMES = ["kubota", "maeda", "kaisho"]
-N_ANNOTATORS = len(ANNOTATOR_NAMES)
-# Test-retest: re-present a FULL gaze-balanced session (same 10 = 7F+3P size as
-# the others, so it is indistinguishable from a normal blind session) of
-# already-seen HITL images (same hidden model) as the final session, to measure
-# intra-annotator reproducibility (ICC / pairwise Dice). Tagged is_repeat
-# server-side; the annotator is not told.
-N_REPEAT = N_PER_SESSION
-# Final scratch repeat: the SAME 10 session-0 images, drawn from scratch again
-# after all HITL sessions (order-effect / learning estimate on paired images).
-SCRATCH_REPEAT_KEY = "scratch_repeat"
-SCRATCH_REPEAT_LABEL = "Scratch（2回目）"
-# Practice = two short warm-up sessions covering BOTH workflows: draw-from-scratch
-# THEN correct-a-prefill. Each has 2 frontal + 1 peripheral (peripheral exercises
-# the iris/pupil ellipse tilt). GT is revealed after each practice submission.
+MODEL_EVAL_MANIFEST = ROOT / "outputs" / "model_eval" / "manifest.json"
+# Real annotator identities (order = rotation index a). Names 4-6 are
+# placeholders until recruitment is final; records are keyed by these strings.
+ANNOTATOR_NAMES = ["kubota", "maeda", "kaisho", "annotator4", "annotator5", "annotator6"]
+# Practice: manual first, then proposal correction (n covers the quality range).
 PRACTICE_SPEC = [
-    {"key": "p_scratch", "is_hitl": False, "model": None,
-     "label": "練習1 Scratch（ゼロから描く）", "n_f": 2, "n_p": 1},
-    {"key": "p_hitl", "is_hitl": True, "model": "seg1000",
-     "label": "練習2 修正（予測を直す）", "n_f": 2, "n_p": 1},
+    {"key": "p_manual", "is_hitl": False, "label": "練習1 ゼロから描く", "n": [0, 0]},
+    {"key": "p_hitl", "is_hitl": True, "label": "練習2 予測を直す", "n": [4, 16, 64]},
 ]
-N_PRACTICE_FRONTAL = sum(s["n_f"] for s in PRACTICE_SPEC)
-N_PRACTICE_PERIPHERAL = sum(s["n_p"] for s in PRACTICE_SPEC)
-# de-baselined iris eccentricity at/above which a gaze counts as peripheral.
-ECC_THRESHOLD = 0.20
-
-# Condition index 0 = scratch; 1..8 = the 8 HITL models (this order = Latin-square columns)
-CONDITION_MODELS = [None, "seg100", "seg200", "seg300", "seg500",
-                    "seg1000", "seg1500", "seg2000", "seg2500"]
-
-# Subset models trained by scripts/train_subset.py on patient-safe nested subsets.
-_MODELS_DIR = Path(__file__).resolve().parents[1] / "outputs" / "models"
-MODELS = {
-    f"seg{n}": {"path": str(_MODELS_DIR / f"seg{n}.pth"),
-                "trained_on": f"~{n} imgs, patient-safe (min annotated id < {TEST_START})",
-                "backbone": SEGFORMER_BACKBONE, "placeholder": False, "trained_images": n}
-    for n in (100, 200, 300, 500, 1000, 1500, 2000, 2500)
-}
+PRACTICE_SEED = 0
 
 
-def patient_of(name: str) -> str:
-    return name.split("-")[0]
+def sha256_of(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _poly_bbox(poly):
-    xs = [p[0] for p in poly]; ys = [p[1] for p in poly]
-    return min(xs), min(ys), max(xs), max(ys)
+def model_name(n: int, seed) -> str | None:
+    return None if not n else f"lora_s{seed}_n{n}"
 
 
-def iris_offset(name: str):
-    """Signed (ex, ey): iris OBB centre minus eyelid bbox centre, normalised by
-    eyelid bbox size. None if eyelid or iris GT is missing."""
-    ann = get_gt_annotation(name)
-    eyelids = ann.get("eyelid") or []
-    irises = ann.get("iris") or []
-    if not eyelids or not irises:
-        return None
-    best = max(eyelids, key=lambda p: (lambda b: (b[2] - b[0]) * (b[3] - b[1]))(_poly_bbox(p)))
-    x0, y0, x1, y1 = _poly_bbox(best)
-    w, h = (x1 - x0), (y1 - y0)
-    if w <= 0 or h <= 0:
-        return None
-    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-    iris = irises[0]
-    return ((iris["cx"] - cx) / w, (iris["cy"] - cy) / h)
+def proposal_key(filename: str, n: int, seed) -> str | None:
+    return None if not n else f"{filename}|n{n}|s{seed}"
 
 
-def load_images_from_xml() -> list[dict]:
-    """[{image_id, filename, patient_id, width, height, n_shapes}] for all images."""
-    out = []
-    for im in ET.parse(EYELID_XML).getroot().findall("image"):
-        out.append({
-            "image_id": int(im.attrib["id"]),
-            "filename": im.attrib["name"],
-            "patient_id": patient_of(im.attrib["name"]),
-            "width": int(float(im.attrib.get("width", 0))),
-            "height": int(float(im.attrib.get("height", 0))),
-            "n_shapes": len(list(im)),
-        })
-    return out
-
-
-def _base(r: dict, block=None) -> dict:
-    e = {k: r[k] for k in ("image_id", "filename", "patient_id", "width", "height")}
-    e["gaze"] = r["gaze"]; e["ecc"] = r["ecc"]
-    if block is not None:
-        e["block"] = block
+def _item(r: dict, group: str, slot: str, n: int, seed) -> dict:
+    e = {k: r[k] for k in ("image_id", "filename", "patient_id", "width", "height", "gaze", "ecc")}
+    e.update({"group": group, "condition": slot, "n": n, "seed": seed, "train_size": n,
+              "model": model_name(n, seed), "proposal_key": proposal_key(r["filename"], n, seed)})
     return e
 
 
-def _roundrobin_by_condition(items: list[dict]) -> list[dict]:
-    """Interleave items so consecutive picks cycle through conditions (spreads
-    each condition's images across sessions). Deterministic (groups sorted)."""
-    groups = OrderedDict()
-    for x in sorted(items, key=lambda y: y["condition"]):
-        groups.setdefault(x["condition"], []).append(x)
+def build_runs(p: dict, groups: dict[str, list[dict]], names: list[str], rng: random.Random) -> dict:
+    S, G, A = p["n_slots"], p["group_size"], p["n_annotators"]
+    n_p, n_sess = p["n_peripheral_per_group"], p["n_sessions"]
+    gids = list(groups)
+    runs = {}
+    for a, annot in enumerate(names):
+        slot_by_group = {g: slot_of(a, gi, p) for gi, g in enumerate(gids)}
+        # sessions containing each group's slot (slot index of group gi = (gi + step*a) mod S)
+        sess_of_slot = session_slots(p, a)                       # session -> slot indices
+        sessions_of_group = {g: [k for k in range(n_sess) if ((gi + p["step"] * a) % S) in sess_of_slot[k]]
+                             for gi, g in enumerate(gids)}
+        assert all(len(v) == G for v in sessions_of_group.values())
+        # seed per (n-slot): as even as possible, the short seed rotates with a and the slot index
+        seeds_for_slot: dict[str, list] = {}
+        for j, slot in enumerate(p["slots"]):
+            if slot == MANUAL:
+                continue
+            lst = [SEEDS[(i + a + j) % len(SEEDS)] for i in range(G)]
+            rng.shuffle(lst)
+            seeds_for_slot[slot] = lst
+        # session assignment: group g's n_p peripheral images go to the sessions
+        # (among the G that contain its slot) with the fewest peripheral images so
+        # far (random tie-break) -> per-session peripheral counts stay within +-1
+        order = list(range(len(gids)))
+        rng.shuffle(order)
+        sessions: list[list[dict]] = [[] for _ in range(n_sess)]
+        per_count = [0] * n_sess
+        seed_cursor: Counter = Counter()
+        for gi in order:
+            g = gids[gi]
+            slot = slot_by_group[g]
+            L = list(sessions_of_group[g])
+            imgs = list(groups[g])
+            per = [x for x in imgs if x["gaze"] == "peripheral"]
+            fro = [x for x in imgs if x["gaze"] == "frontal"]
+            rng.shuffle(per); rng.shuffle(fro); rng.shuffle(L)
+            L.sort(key=lambda k: per_count[k])          # stable: random order among ties
+            per_sessions = L[:n_p]
+            for k in per_sessions:
+                per_count[k] += 1
+            fro_sessions = L[n_p:]
+            for k, r in zip(per_sessions + fro_sessions, per + fro):
+                n = 0 if slot == MANUAL else int(slot[1:])
+                seed = None if not n else seeds_for_slot[slot][seed_cursor[slot]]
+                seed_cursor[slot] += 1
+                sessions[k].append(_item(r, g, slot, n, seed))
+        rng.shuffle(sessions)                       # session order
+        out = []
+        for k, items in enumerate(sessions):
+            rng.shuffle(items)                      # order within session
+            out.append({"session_index": k, "key": f"s{k + 1:02d}", "is_hitl": True,
+                        "label": f"Session {k + 1}",
+                        "items": [dict(it, order_in_session=i) for i, it in enumerate(items)]})
+        runs[annot] = {"sessions": out}
+    return runs
+
+
+def build_practice(prac: list[dict], rng: random.Random) -> list[dict]:
+    fro = [r for r in prac if r["gaze"] == "frontal"]
+    per = [r for r in prac if r["gaze"] == "peripheral"]
+    rng.shuffle(fro); rng.shuffle(per)
+    # each practice session gets >= 1 peripheral (ellipse tilt practice)
+    pools = {"p_manual": [fro.pop(), per.pop()], "p_hitl": [fro.pop(), fro.pop(), per.pop()]}
     out = []
-    for tup in zip_longest(*groups.values()):
-        out.extend(x for x in tup if x is not None)
+    for spec in PRACTICE_SPEC:
+        imgs = pools[spec["key"]]
+        rng.shuffle(imgs)
+        items = []
+        for i, (r, n) in enumerate(zip(imgs, spec["n"])):
+            it = _item(r, "practice", "practice", n, None if not n else PRACTICE_SEED)
+            items.append(dict(it, order_in_session=i))
+        out.append({"key": spec["key"], "is_hitl": spec["is_hitl"], "label": spec["label"], "items": items})
     return out
 
 
 def main() -> None:
-    imgs = load_images_from_xml()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--annotators", type=int, default=6)
+    args = ap.parse_args()
 
-    # patient-safe test pool: patients whose min annotated id >= TEST_START
-    min_ann_id: dict[str, int] = defaultdict(lambda: 10**9)
-    for r in imgs:
-        if r["n_shapes"] > 0:
-            min_ann_id[r["patient_id"]] = min(min_ann_id[r["patient_id"]], r["image_id"])
-    safe_patients = {p for p, mid in min_ann_id.items() if mid >= TEST_START}
+    study = json.loads(STUDY_IMAGES_JSON.read_text(encoding="utf-8"))
+    p = design_params(args.annotators, study["design"]["group_size"])
+    assert p["n_study_images"] == study["design"]["n_study_images"], \
+        "annotator count incompatible with the frozen study pool (re-run select_study_images.py)"
+    names = ANNOTATOR_NAMES[:p["n_annotators"]]
+    assert len(names) == p["n_annotators"], "add annotator names"
+    proposals = json.loads(PROPOSALS_JSON.read_text(encoding="utf-8"))
+    manifest = json.loads(MODEL_EVAL_MANIFEST.read_text(encoding="utf-8"))
+    study_sha = sha256_of(STUDY_IMAGES_JSON)
+    assert proposals["provenance"]["study_images_sha256"] == study_sha, "proposals built from another study pool"
+    assert manifest["study_images_sha256"] == study_sha, "checkpoints built from another study pool"
 
-    pool = [r for r in imgs
-            if TEST_START <= r["image_id"] <= TEST_END and r["n_shapes"] > 0
-            and r["patient_id"] in safe_patients and (IMAGES_DIR / r["filename"]).exists()]
-    pool.sort(key=lambda r: r["image_id"])
-
-    # gaze classification (de-baselined iris eccentricity)
-    offsets = {r["image_id"]: iris_offset(r["filename"]) for r in pool}
-    have = [o for o in offsets.values() if o is not None]
-    mex = sorted(o[0] for o in have)[len(have) // 2]
-    mey = sorted(o[1] for o in have)[len(have) // 2]
-    pool = [r for r in pool if offsets[r["image_id"]] is not None]
-    for r in pool:
-        o = offsets[r["image_id"]]
-        dx, dy = o[0] - mex, o[1] - mey
-        r["ecc"] = round((dx * dx + dy * dy) ** 0.5, 4)
-        r["gaze"] = "peripheral" if r["ecc"] >= ECC_THRESHOLD else "frontal"
-
-    frontal = [r for r in pool if r["gaze"] == "frontal"]
-    peripheral = [r for r in pool if r["gaze"] == "peripheral"]
-
-    need_f = N_BLOCKS * N_FRONTAL + N_PRACTICE_FRONTAL      # 63 + 3
-    need_p = N_BLOCKS * N_PERIPHERAL + N_PRACTICE_PERIPHERAL  # 27 + 2
-    if len(frontal) < need_f or len(peripheral) < need_p:
-        raise SystemExit(f"Need {need_f} frontal + {need_p} peripheral; pool has "
-                         f"{len(frontal)} / {len(peripheral)} (lower ECC_THRESHOLD).")
-
+    imgs = [dict(r) for r in study["images"] if r["role"] == "study"]
+    prac = [dict(r) for r in study["images"] if r["role"] == "practice"]
     rng = random.Random(SEED)
-    sel_f = rng.sample(frontal, need_f)
-    sel_p = rng.sample(peripheral, need_p)
-    study_f, prac_f = sel_f[:N_BLOCKS * N_FRONTAL], sel_f[N_BLOCKS * N_FRONTAL:]
-    study_p, prac_p = sel_p[:N_BLOCKS * N_PERIPHERAL], sel_p[N_BLOCKS * N_PERIPHERAL:]
-    rng.shuffle(study_f); rng.shuffle(study_p)
+    fro = [r for r in imgs if r["gaze"] == "frontal"]
+    per = [r for r in imgs if r["gaze"] == "peripheral"]
+    rng.shuffle(fro); rng.shuffle(per)
+    S, G, nf, npp = p["n_slots"], p["group_size"], p["n_frontal_per_group"], p["n_peripheral_per_group"]
+    groups = {f"G{g}": fro[g * nf:(g + 1) * nf] + per[g * npp:(g + 1) * npp] for g in range(S)}
 
-    # 9 gaze-balanced blocks (7F + 3P)
-    blocks: dict[str, list[dict]] = {}
-    for j in range(N_BLOCKS):
-        bid = f"B{j}"
-        items = [_base(r, bid) for r in (study_f[j * N_FRONTAL:(j + 1) * N_FRONTAL]
-                                         + study_p[j * N_PERIPHERAL:(j + 1) * N_PERIPHERAL])]
-        blocks[bid] = items
-
-    # 3x9 cyclic Latin square: L[annotator_row][block] = condition index
-    L = [[(i + j) % N_BLOCKS for j in range(N_BLOCKS)] for i in range(N_ANNOTATORS)]
-
-    conditions = [{"index": i, "key": ("scratch" if i == 0 else CONDITION_MODELS[i]),
-                   "model": CONDITION_MODELS[i], "is_hitl": i != 0} for i in range(N_BLOCKS)]
-
-    def train_size(model):
-        return MODELS[model]["trained_images"] if model else None
-
-    runs: dict[str, dict] = {}
-    for ai in range(N_ANNOTATORS):
-        annot = ANNOTATOR_NAMES[ai]
-        block_cond = {f"B{j}": L[ai][j] for j in range(N_BLOCKS)}
-
-        # scratch session = the block this annotator maps to condition 0
-        scratch_bid = next(b for b, c in block_cond.items() if c == 0)
-        scratch_imgs = [dict(im, condition="scratch", model=None, train_size=None)
-                        for im in blocks[scratch_bid]]
-        rng.shuffle(scratch_imgs)
-
-        # the 8 HITL blocks -> 80 images tagged with their hidden condition
-        hitl = []
-        for bid, cidx in block_cond.items():
-            if cidx == 0:
-                continue
-            model = CONDITION_MODELS[cidx]
-            hitl += [dict(im, condition=model, model=model, train_size=train_size(model))
-                     for im in blocks[bid]]
-        hf = _roundrobin_by_condition([x for x in hitl if x["gaze"] == "frontal"])    # 56
-        hp = _roundrobin_by_condition([x for x in hitl if x["gaze"] == "peripheral"])  # 24
-
-        # chunk into 8 condition-mixed, gaze-balanced sessions of 10
-        hitl_sessions = []
-        for s in range(N_BLOCKS - 1):
-            sitems = (hf[s * N_FRONTAL:(s + 1) * N_FRONTAL]
-                      + hp[s * N_PERIPHERAL:(s + 1) * N_PERIPHERAL])
-            rng.shuffle(sitems)
-            hitl_sessions.append(sitems)
-        rng.shuffle(hitl_sessions)   # shuffle only the 8 HITL slots (scratch stays first)
-
-        def sess(items, idx, key, is_hitl, label):
-            return {"session_index": idx, "key": key, "is_hitl": is_hitl, "label": label,
-                    "items": [dict(it, order_in_session=k) for k, it in enumerate(items)]}
-
-        sessions = [sess(scratch_imgs, 0, "scratch", False, "Scratch")]
-        for s, sitems in enumerate(hitl_sessions):
-            sessions.append(sess(sitems, s + 1, f"hitl_{s + 1}", True, f"Session {s + 1}"))
-        # test-retest: re-present a full gaze-balanced session (7F+3P) of
-        # already-seen HITL images (identical hidden condition/model, so the
-        # prefill is reproduced) as the final blind session tagged is_repeat. Not
-        # disclosed to the client. A dedicated RNG keeps the 90-image assignments
-        # & practice identical to before.
-        rep_rng = random.Random(SEED + 1000 + ai)
-        rep_f = [x for x in hitl if x["gaze"] == "frontal"]
-        rep_p = [x for x in hitl if x["gaze"] == "peripheral"]
-        repeat_src = rep_rng.sample(rep_f, N_FRONTAL) + rep_rng.sample(rep_p, N_PERIPHERAL)
-        rep_rng.shuffle(repeat_src)
-        repeat_imgs = [dict(im, is_repeat=True) for im in repeat_src]
-        sessions.append(sess(repeat_imgs, N_BLOCKS, "hitl_repeat", True, f"Session {N_BLOCKS}"))
-        # final scratch repeat: same 10 scratch images, reshuffled with its own
-        # RNG (main rng untouched -> all earlier assignments stay identical).
-        sr_rng = random.Random(SEED + 2000 + ai)
-        scratch2 = [dict(im, is_repeat=True) for im in scratch_imgs]
-        sr_rng.shuffle(scratch2)
-        sessions.append(sess(scratch2, N_BLOCKS + 1, SCRATCH_REPEAT_KEY, False, SCRATCH_REPEAT_LABEL))
-        runs[annot] = {"sessions": sessions}
-
-    # practice: two short warm-up sessions (disjoint from the 90 study images & training)
-    fi, pi = iter(prac_f), iter(prac_p)
-    practice = []
-    for spec in PRACTICE_SPEC:
-        items = ([_base(next(fi)) for _ in range(spec["n_f"])]
-                 + [_base(next(pi)) for _ in range(spec["n_p"])])
-        rng.shuffle(items)
-        practice.append({"key": spec["key"], "is_hitl": spec["is_hitl"], "model": spec["model"],
-                         "label": spec["label"],
-                         "items": [dict(it, order_in_session=k) for k, it in enumerate(items)]})
-
-    # legacy phases/assignments (annotator 1's block->condition) for HITL_DEBUG fallback
-    legacy_phases, legacy_assign = [], {}
-    for cidx in range(N_BLOCKS):
-        model = CONDITION_MODELS[cidx]
-        ckey = "scratch" if cidx == 0 else model
-        label = "Scratch (no model)" if cidx == 0 else f"HITL @{MODELS[model]['trained_images']}"
-        legacy_phases.append({"key": ckey, "label": label, "model": model})
-        bid = next(f"B{j}" for j in range(N_BLOCKS) if L[0][j] == cidx)
-        legacy_assign[ckey] = [dict(im) for im in blocks[bid]]
-
+    runs = build_runs(p, groups, names, rng)
+    practice = build_practice(prac, rng)
+    conditions = [{"key": MANUAL, "n": 0, "is_hitl": False}] + \
+                 [{"key": f"n{n}", "n": n, "is_hitl": True} for n in p["n_levels"]]
     experiment = {
-        "seed": SEED, "test_start": TEST_START, "test_end": TEST_END,
-        "n_blocks": N_BLOCKS, "n_annotators": N_ANNOTATORS, "n_per_session": N_PER_SESSION,
-        "n_frontal": N_FRONTAL, "n_peripheral": N_PERIPHERAL, "ecc_threshold": ECC_THRESHOLD,
-        "gaze_baseline": {"ex": round(mex, 4), "ey": round(mey, 4)},
-        "conditions": conditions, "blocks": blocks, "latin_square": L,
-        "annotators": list(ANNOTATOR_NAMES),
-        "runs": runs, "practice": practice, "models": MODELS,
-        # legacy fallback (debug only)
-        "phases": legacy_phases, "assignments": legacy_assign, "n_per_phase": N_PER_SESSION,
+        "version": 2, "design": "dose_response_nshot", "seed": SEED,
+        **{k: p[k] for k in ("n_annotators", "n_slots", "n_manual_slots", "step", "group_size",
+                             "n_frontal_per_group", "n_peripheral_per_group", "manual_per_image",
+                             "images_per_annotator", "manual_per_annotator", "slots", "n_levels", "seeds",
+                             "session_size", "n_sessions", "omit_per_session")},
+        "n_per_session": p["session_size"],
+        "ecc_threshold": study["ecc_threshold"], "gaze_baseline": study["gaze_baseline"],
+        "conditions": conditions, "annotators": names,
+        "groups": {g: [{k: r[k] for k in ("image_id", "filename", "patient_id", "width", "height",
+                                            "gaze", "ecc")} for r in items] for g, items in groups.items()},
+        "slot_assignment": {annot: {g: slot_of(a, gi, p) for gi, g in enumerate(groups)}
+                            for a, annot in enumerate(names)},
+        "runs": runs, "practice": practice,
+        "checkpoints": {"run": manifest["run"], "recipe": manifest["recipe"],
+                        "n_trainable_params": manifest.get("n_trainable_params")},
+        "study_images_file": str(STUDY_IMAGES_JSON.relative_to(ROOT)), "study_images_sha256": study_sha,
+        "proposals_file": str(PROPOSALS_JSON.relative_to(ROOT)), "proposals_sha256": sha256_of(PROPOSALS_JSON),
+        "model_eval_manifest_sha256": sha256_of(MODEL_EVAL_MANIFEST),
     }
-
-    _audit_and_assert(experiment, pool, study_f + study_p, prac_f + prac_p)
+    _audit_and_assert(experiment, p, imgs, prac, proposals, manifest)
 
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     with open(EXPERIMENT_JSON, "w", encoding="utf-8") as f:
-        json.dump(experiment, f, ensure_ascii=False, indent=2)
-    print(f"\nWrote {EXPERIMENT_JSON}")
+        json.dump(experiment, f, ensure_ascii=False, indent=1)
+    print(f"\nWrote {EXPERIMENT_JSON}\nsha256 {sha256_of(EXPERIMENT_JSON)}")
 
 
-def _audit_and_assert(exp, pool, study, practice_imgs):
-    blocks, L, runs = exp["blocks"], exp["latin_square"], exp["runs"]
-    pool_ids = {r["image_id"] for r in pool}
+def _audit_and_assert(exp, p, study, prac, proposals, manifest):
+    S, G, A = p["n_slots"], p["group_size"], p["n_annotators"]
+    nf, npp = p["n_frontal_per_group"], p["n_peripheral_per_group"]
+    P, n_sess = p["session_size"], p["n_sessions"]
     study_ids = {r["image_id"] for r in study}
-    prac_ids = {r["image_id"] for r in practice_imgs}
+    prac_ids = {r["image_id"] for r in prac}
+    groups, runs = exp["groups"], exp["runs"]
+    print("=== experiment.json v2 audit ===")
+    print(f"annotators={A} slots={S} (manual x{p['n_manual_slots']}) group_size={G} "
+          f"sessions={n_sess}x{P} study={len(study_ids)} practice={len(prac_ids)}")
 
-    print("=== experiment.json audit ===")
-    print(f"pool={len(pool_ids)}  study(90)={len(study_ids)}  practice={len(prac_ids)}")
+    # groups: S groups x (nf F + npp P), union = all study images
+    assert len(groups) == S
+    union = set()
+    for g, items in groups.items():
+        assert len(items) == G, g
+        assert Counter(i["gaze"] for i in items) == {"frontal": nf, "peripheral": npp}, g
+        union |= {i["image_id"] for i in items}
+    assert union == study_ids and len(union) == S * G
+    assert not (prac_ids & study_ids)
 
-    # blocks: 9 blocks, each 7F+3P, all in pool, study = union of blocks (90 unique)
-    assert len(blocks) == N_BLOCKS
-    block_union = set()
-    for bid, items in blocks.items():
-        assert len(items) == N_PER_SESSION, bid
-        assert sum(i["gaze"] == "frontal" for i in items) == N_FRONTAL, bid
-        assert sum(i["gaze"] == "peripheral" for i in items) == N_PERIPHERAL, bid
-        ids = {i["image_id"] for i in items}
-        assert ids <= pool_ids
-        block_union |= ids
-    assert block_union == study_ids and len(block_union) == 90, "blocks != 90 unique study imgs"
+    # practice
+    pr = exp["practice"]
+    assert [ps["is_hitl"] for ps in pr] == [False, True]
+    pitems = [it for ps in pr for it in ps["items"]]
+    assert {it["image_id"] for it in pitems} == prac_ids and len(pitems) == len(prac_ids)
+    assert all(it["n"] == 0 for it in pr[0]["items"]) and all(it["n"] > 0 for it in pr[1]["items"])
+    for ps in pr:
+        assert any(it["gaze"] == "peripheral" for it in ps["items"]), ps["key"]
 
-    # Latin square: each row a permutation of 0..8; each column 3 distinct
-    for row in L:
-        assert sorted(row) == list(range(N_BLOCKS)), "row not a permutation"
-    for c in range(N_BLOCKS):
-        col = [L[r][c] for r in range(len(L))]
-        assert len(set(col)) == len(col), "column has duplicate condition"
+    # per annotator
+    slot_sets: dict[int, list[str]] = defaultdict(list)   # image_id -> slots across annotators
+    manual_count: Counter = Counter()
+    seed_total: dict[str, Counter] = defaultdict(Counter)
+    for a, annot in enumerate(exp["annotators"]):
+        sessions = runs[annot]["sessions"]
+        assert [s["session_index"] for s in sessions] == list(range(n_sess)), annot
+        seen: list[int] = []
+        per_slot: Counter = Counter()
+        per_n_gaze: dict[str, Counter] = defaultdict(Counter)
+        per_n_seed: dict[str, Counter] = defaultdict(Counter)
+        per_session_p, per_session_m = [], []
+        slot_omissions: Counter = Counter()
+        for s in sessions:
+            assert s["is_hitl"] and len(s["items"]) == P, (annot, s["key"])
+            assert [it["order_in_session"] for it in s["items"]] == list(range(P))
+            conds = Counter(it["condition"] for it in s["items"])
+            # each n-level at most once per session; manual = the slots not omitted
+            assert all(v == 1 for k, v in conds.items() if k != MANUAL), (annot, s["key"], conds)
+            assert len(s["items"]) == sum(conds.values()) and set(conds) <= set(p["slots"])
+            for n in p["n_levels"]:
+                slot_omissions[f"n{n}"] += conds.get(f"n{n}", 0) == 0
+            per_session_m.append(conds.get(MANUAL, 0))
+            per_session_p.append(sum(it["gaze"] == "peripheral" for it in s["items"]))
+            for it in s["items"]:
+                seen.append(it["image_id"])
+                per_slot[it["condition"]] += 1
+                per_n_gaze[it["condition"]][it["gaze"]] += 1
+                assert it["train_size"] == it["n"]
+                assert exp["slot_assignment"][annot][it["group"]] == it["condition"]
+                if it["n"] == 0:
+                    assert it["seed"] is None and it["model"] is None and it["proposal_key"] is None
+                    manual_count[it["image_id"]] += 1
+                else:
+                    assert it["seed"] in p["seeds"] and it["model"] == f"lora_s{it['seed']}_n{it['n']}"
+                    per_n_seed[it["condition"]][it["seed"]] += 1
+                    seed_total[it["condition"]][it["seed"]] += 1
+                slot_sets[it["image_id"]].append(it["condition"])
+        assert max(per_session_m) - min(per_session_m) <= 1, (annot, per_session_m)
+        assert set(slot_omissions.values()) <= {n_sess - G}, (annot, slot_omissions)
+        assert sorted(seen) == sorted(study_ids), f"{annot}: image set != study images / duplicates"
+        for n in p["n_levels"]:
+            key = f"n{n}"
+            assert per_slot[key] == G and per_n_gaze[key] == {"frontal": nf, "peripheral": npp}, (annot, key)
+            cnt = per_n_seed[key]
+            assert max(cnt.values()) - min(cnt.get(sd, 0) for sd in p["seeds"]) <= 1, (annot, key, cnt)
+        assert per_slot[MANUAL] == p["manual_per_annotator"]
+        assert max(per_session_p) - min(per_session_p) <= 2, (annot, per_session_p)
+        print(f"  {annot}: sessions={n_sess}x{P} manual={per_slot[MANUAL]} manual/session={per_session_m} "
+              f"peripheral/session={per_session_p}")
+    # across annotators
+    for iid, slots in slot_sets.items():
+        assert len(slots) == A and len(set(s for s in slots if s != MANUAL)) == len([s for s in slots if s != MANUAL]), iid
+        assert manual_count[iid] == p["manual_per_image"], (iid, manual_count[iid])
+    for n in p["n_levels"]:
+        tot = seed_total[f"n{n}"]
+        assert max(tot.values()) - min(tot.values()) <= A // len(p["seeds"]) + 1, (n, tot)
+    print(f"  seed totals per n: {dict(seed_total['n1'])} (identical pattern for all n)")
 
-    # practice: two warm-up sessions (scratch then hitl), each gaze-balanced; disjoint from study
-    prac_sessions = exp["practice"]
-    prac_items = [it for ps in prac_sessions for it in ps["items"]]
-    assert len(prac_ids) == len(prac_items) == N_PRACTICE_FRONTAL + N_PRACTICE_PERIPHERAL
-    pf = sum(i["gaze"] == "frontal" for i in prac_items)
-    pp = sum(i["gaze"] == "peripheral" for i in prac_items)
-    assert (pf, pp) == (N_PRACTICE_FRONTAL, N_PRACTICE_PERIPHERAL), (pf, pp)
-    assert pp >= 2, "practice must include >=2 peripheral"
-    for ps in prac_sessions:
-        assert sum(i["gaze"] == "peripheral" for i in ps["items"]) >= 1, f"{ps['key']} needs >=1 peripheral"
-    assert [ps["is_hitl"] for ps in prac_sessions] == [False, True], "practice order: scratch then hitl"
-    assert not (prac_ids & study_ids), "practice overlaps study images"
+    # proposals present for every n>0 item (runs + practice)
+    all_items = [it for r in runs.values() for s in r["sessions"] for it in s["items"]] + pitems
+    for it in all_items:
+        if it["n"]:
+            e = proposals["images"][it["filename"]]["proposals"][f"n{it['n']}"][f"s{it['seed']}"]
+            assert "shapes" in e and "metrics" in e, it["proposal_key"]
 
-    # per-annotator runs
-    for annot, run in runs.items():
-        sessions = run["sessions"]
-        # the trailing repeat sessions are audited separately (already-seen images)
-        repeat = [s for s in sessions if any(i.get("is_repeat") for i in s["items"])]
-        real = [s for s in sessions if s not in repeat]
-        assert len(real) == N_BLOCKS
-        hitl_rep = [s for s in repeat if s["is_hitl"]]
-        scr_rep = [s for s in repeat if not s["is_hitl"]]
-        assert len(hitl_rep) == 1 and len(hitl_rep[0]["items"]) == N_REPEAT, \
-            f"annotator {annot}: expected one HITL repeat session of {N_REPEAT}"
-        assert len(scr_rep) == 1, f"annotator {annot}: expected one scratch repeat session"
-        assert [s["session_index"] for s in sessions] == list(range(len(sessions))), \
-            f"annotator {annot}: session_index not contiguous"
-        s0 = sessions[0]
-        assert s0["session_index"] == 0 and s0["key"] == "scratch" and not s0["is_hitl"], \
-            f"annotator {annot}: scratch not session 0"
-        seen_ids, conds_seen = set(), set()
-        for s in real:
-            assert len(s["items"]) == N_PER_SESSION
-            assert sum(i["gaze"] == "frontal" for i in s["items"]) == N_FRONTAL
-            assert sum(i["gaze"] == "peripheral" for i in s["items"]) == N_PERIPHERAL
-            sconds = {i["condition"] for i in s["items"]}
-            if s["is_hitl"]:
-                assert len(sconds) >= 2, f"annotator {annot} {s['key']} not interleaved: {sconds}"
-            else:
-                assert sconds == {"scratch"}
-            conds_seen |= sconds
-            seen_ids |= {i["image_id"] for i in s["items"]}
-        assert seen_ids == study_ids, f"annotator {annot} image set != 90 study imgs"
-        assert conds_seen == {"scratch"} | {m for m in CONDITION_MODELS if m}, \
-            f"annotator {annot} missing conditions"
-        # repeat session: full gaze-balanced 10 (7F+3P), all HITL & previously seen
-        rs = hitl_rep[0]
-        assert rs["is_hitl"] and all(i.get("is_repeat") for i in rs["items"]), \
-            f"annotator {annot}: repeat session mistagged"
-        assert len(rs["items"]) == N_PER_SESSION, f"annotator {annot}: repeat not 10 imgs"
-        assert sum(i["gaze"] == "frontal" for i in rs["items"]) == N_FRONTAL, \
-            f"annotator {annot}: repeat gaze imbalance"
-        assert sum(i["gaze"] == "peripheral" for i in rs["items"]) == N_PERIPHERAL, \
-            f"annotator {annot}: repeat gaze imbalance"
-        rep_ids = {i["image_id"] for i in rs["items"]}
-        assert rep_ids <= seen_ids, f"annotator {annot}: repeat images not previously seen"
-        # scratch repeat: LAST session, unblinded scratch, exactly the session-0 images reshuffled
-        ss = scr_rep[0]
-        assert ss is sessions[-1] and ss["key"] == SCRATCH_REPEAT_KEY, \
-            f"annotator {annot}: scratch repeat must be the final session"
-        assert not ss["is_hitl"] and all(i.get("is_repeat") for i in ss["items"]), \
-            f"annotator {annot}: scratch repeat mistagged"
-        assert all(i["condition"] == "scratch" and i["model"] is None for i in ss["items"]), \
-            f"annotator {annot}: scratch repeat has a model/condition"
-        assert len(ss["items"]) == N_PER_SESSION
-        assert sum(i["gaze"] == "frontal" for i in ss["items"]) == N_FRONTAL
-        assert sum(i["gaze"] == "peripheral" for i in ss["items"]) == N_PERIPHERAL
-        s0_order = [i["image_id"] for i in s0["items"]]
-        ss_order = [i["image_id"] for i in ss["items"]]
-        assert set(ss_order) == set(s0_order), f"annotator {annot}: scratch repeat != session-0 images"
-        assert ss_order != s0_order, f"annotator {annot}: scratch repeat not reshuffled"
-        # report
-        order = " ".join(s["key"] for s in sessions)
-        print(f"  annotator {annot}: {order}")
+    # patient disjointness: study patients vs training orders and model-eval set (both ways)
+    study_pat = {r["patient_id"] for r in study} | {r["patient_id"] for r in prac}
+    train_pat = {i.split("-")[0] for o in manifest["orders"].values() for i in o}
+    eval_pat = {i.split("-")[0] for i in manifest["eval_ids"]}
+    assert not (study_pat & train_pat), study_pat & train_pat
+    assert not (study_pat & eval_pat), study_pat & eval_pat
+    assert not (train_pat & eval_pat)
+    assert study_pat <= set(manifest["excluded_patients"])
+    print(f"  patients: study={len(study_pat)} train={len(train_pat)} eval={len(eval_pat)} (disjoint)")
     print("ALL ASSERTIONS PASSED")
 
 

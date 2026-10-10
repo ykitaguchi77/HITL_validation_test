@@ -36,3 +36,10 @@
 - Knowledge/participant-walkthrough-before-study-launch.md(手順書・運用面の穴を洗う技法。本パターンは論文側の穴)
 - Knowledge/hitl-blinding-and-confound-design.md(各リスクの設計上の背景)
 - tasks/todo.md(開始前必須の残件)
+
+## 追記 (2026-09-15)
+- 参照: Experimental_record/20260915.md(追記10)
+- 仕分けで「開始前必須」とした 3(事前解析計画)・9(背景質問票)は同日中に `outputs/docs/analysis_plan.md`・
+  `outputs/docs/annotator_questionnaire.md` として文書化し、コミット `e131aff` で時点を固定した。
+  計画書の書き方は Knowledge/pre-specified-analysis-plan-small-n-user-study.md に分離。
+- 残った ❓(倫理審査)はユーザー側手続きとして `tasks/todo.md` に残し、✅ に変えていない。

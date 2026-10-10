@@ -42,3 +42,15 @@ per-class 共通カラムで生成する。
 - `scripts/webapp/static/js/metrics.js`(`setActiveClass`/`_flushClassTime`)
 - `scripts/webapp/backend/session.py`(`_per_class_cols()`)
 - `scripts/webapp/static/js/app.js`(画像表示直後 `setActiveClass("eyelid")`)
+
+## 追記 (2026-09-20) — `reset()` が既定クラスの帰属を消していた(混入どころか無帰属)
+- 関連: Experimental_record/20260920.md
+- 実ユーザーの Session 1 実データで、手動 1 枚目に eyelid を 32 点描いたのに `eyelid_time_sec=0`・`eyelid_vertices_*=0` を発見。
+  `app.js` の `loadCurrent()` が `setActiveClass("eyelid")` → 画像+提案の準備完了後に `metrics.reset()` の順で呼び、
+  **`reset()` が `activeClass=null` に戻す**ため、サイドバーで別クラスを選ぶまでクラス別の時間・クリック・頂点数が
+  どのクラスにも帰属しなかった(全体列は正しい)。本文の「既定 eyelid に非依存時間が混入」は成立しておらず、
+  実際は**既定クラスに何も乗っていなかった**(2026-07-12 以降の test 記録すべて)。
+- 修正: `metrics.reset()` の直後に `this.metrics.setActiveClass(this.active)` を再適用。
+- 教訓: **リセットは既定状態も消す**。「既定選択」を reset より前に設定している箇所がないか、reset の呼び出し側を洗い、
+  reset 後に再適用する。検証では「既定クラスのまま最後まで作業する」経路を 1 本入れる(Playwright 手順はタブを押す経路しか通っておらず見逃した)。
+  → [[first-real-session-column-audit-zero-vs-missing]]

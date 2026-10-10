@@ -32,3 +32,25 @@ Claude Code の auto(自動許可)モードでは、`git push` のような外�
 ## 関連
 - Experimental_record/20260915.md
 - [[medical-repo-pre-push-data-hygiene]]
+
+## 追記 (2026-09-15)
+- 参照: Experimental_record/20260915.md
+- 同日2回目のコミット `e131aff` では、分類器のブロックを待たずにコミット完了報告と同時に
+  `! git push origin main` を案内 → ユーザー実行で `a5951a0..e131aff` push 成功。
+  一度ブロックが確認されたセッションでは、以後の push は最初からユーザー実行に委ねてよい
+  (再試行して再ブロックされる往復を省ける)。
+
+## 追記 (2026-09-15, 3回目)
+- 参照: Experimental_record/20260915.md
+- 同日3回目 `b7ded06` も同じ運用(コミット完了報告と同時に `! git push origin main` を案内 → ユーザー実行で
+  `e131aff..b7ded06` push 成功)。3連続で安定して機能したため、このプロジェクトでは
+  「Claude はコミットまで、push はユーザーが `! git push origin main`」を標準手順として固定する。
+
+## 追記 (2026-09-15, 4回目: `!` は行頭必須)
+- 参照: Experimental_record/20260915.md
+- 4回目 `47cbd7d` で、ユーザーの入力が **` ! git push origin main`(先頭に半角スペース)** だったため
+  bash モードとして解釈されず通常メッセージとして届き、コマンドは実行されなかった。
+  「行頭を `!` から始めて再入力」を案内 → 再入力で push 成功(`3b9db4a..47cbd7d`)。
+- 案内文には **「行頭に `!`、前にスペースを入れない」** を一言添えると往復が1回減る。
+  また hook 側で push の成否を裏取りするには `git status -sb`(ahead の有無)や
+  `git reflog show origin/main --date=iso`(`update by push` の時刻)が使える。

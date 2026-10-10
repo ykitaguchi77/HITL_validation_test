@@ -74,7 +74,7 @@
       document.querySelectorAll("#toolbar .tool").forEach((b) =>
         b.classList.toggle("active", b.dataset.tool === name));
       const hints = {
-        select: "図形クリックで選択／頂点クリックで選択→ドラッグ移動・Backspace/Escで頂点削除／何もない所をドラッグで画像移動／ポリゴン選択中にShift+クリックで点を追加（ダブルクリックで確定）／Ctrl+ドラッグで複数頂点を囲んでまとめて移動",
+        select: "頂点をドラッグで移動／辺の中点をドラッグで点追加／頂点クリック→Backspace で削除／Ctrl+ドラッグで頂点を囲んでまとめて移動・Delete でまとめて削除／Shift+クリックで点を追加（ダブルクリックで確定）／何もない所をドラッグで画像移動",
         polygon: "クリックで頂点追加／最初の点付近クリックかダブルクリックで閉じる／何もない所をドラッグで画像移動",
         ellipse: "ドラッグで楕円を作成／選択ツールで回転・リサイズ",
         pan: "ドラッグで画像移動／ホイール・2本指で拡大縮小",
@@ -117,7 +117,7 @@
       this.clearVertexSel();
       this.vsel = { shape, i };
       shape.highlightVertex(i);
-      this.app.setHint("頂点を選択中 — Backspace / Esc で削除、ドラッグで移動");
+      this.app.setHint("頂点を選択中 — ドラッグ / 矢印キーで移動、Backspace / Esc で削除");
     }
     clearVertexSel() {
       if (this.vsel) { this.vsel.shape.clearVertexSel(); this.vsel = null; }
@@ -131,6 +131,26 @@
       this.vsel = null;
       shape._deleteVertex(i);   // guards, metrics, rebuild, commit
       this.app.onChange();
+      return true;
+    }
+    // delete every marquee-selected vertex (Delete / Backspace / 🗑 while a multi-selection is active)
+    deleteSelectedVertices() {
+      if (!this.vselMulti) return false;
+      const { shape, idx } = this.vselMulti;
+      if (shape.points.length - idx.length < 3) {
+        this.app.setHint("ポリゴンは3点以上必要です（選択を減らしてください）"); return false;
+      }
+      this.vselMulti = null;
+      shape.deleteVertices(idx);
+      this.app.setHint(`頂点を ${idx.length} 個削除しました`);
+      this.app.onChange();
+      return true;
+    }
+    // 🗑 / Delete: marquee-selected vertices > the highlighted vertex > the whole shape
+    deleteContext() {
+      if (this.vselMulti) return this.deleteSelectedVertices();
+      if (this.vsel) return this.deleteSelectedVertex();
+      this.deleteSelected();
       return true;
     }
     deleteSelected() {
@@ -171,7 +191,7 @@
       if (idx.length) {
         this.vselMulti = { shape: m.shape, idx };
         m.shape.setMultiSel(idx);
-        this.app.setHint(`頂点を ${idx.length} 個選択 — ドラッグ／矢印キーでまとめて移動、Esc で解除`);
+        this.app.setHint(`頂点を ${idx.length} 個選択 — ドラッグ／矢印キーでまとめて移動、Delete でまとめて削除、Esc で解除`);
       }
       this.view.layer.batchDraw();
     }
@@ -620,8 +640,19 @@
           else if (this._nudgeDirty) { this._nudgeDirty = false; this.vselMulti.idx.forEach(() => this.metrics.vertexMoved()); this.commit(); this.app.onChange(); }
           return;
         }
+        // a single highlighted vertex: move just that vertex (not the whole polygon)
+        if (this.vsel) {
+          e.preventDefault();
+          if (down) { this.vsel.shape.moveVertices([this.vsel.i], NUDGE[e.key][0], NUDGE[e.key][1]); this._nudgeDirty = true; }
+          else if (this._nudgeDirty) { this._nudgeDirty = false; this.metrics.vertexMoved(); this.commit(); this.app.onChange(); }
+          return;
+        }
         if (!this.selected) return;
         e.preventDefault();
+        if (this.selected.kind === "polygon") {   // whole-polygon moves are never wanted for eyelids
+          if (down) this.app.setHint("動かしたい頂点をクリックして選んでから矢印キーを押してください（Ctrl+ドラッグで囲めば複数）");
+          return;
+        }
         if (down) { this._nudge(NUDGE[e.key][0], NUDGE[e.key][1]); this._nudgeDirty = true; }
         else if (this._nudgeDirty) { this._nudgeDirty = false; this.metrics.vertexMoved(); this.commit(); }
         return;
@@ -649,8 +680,7 @@
           break;
         case "delete": case "backspace":
           e.preventDefault();
-          if (this.vsel) this.deleteSelectedVertex();         // 選択頂点を削除
-          else this.deleteSelected();                          // 図形ごと削除
+          this.deleteContext();   // 複数選択頂点 > 選択頂点 > 図形ごと
           break;
       }
     }

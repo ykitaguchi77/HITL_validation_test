@@ -84,3 +84,9 @@ N人のブラウザ ──HTTPS──> *.trycloudflare.com ──tunnel──> l
 - Experimental_record/20260620.md（配布方針の相談）
 - Knowledge/hitl-annotation-webapp-konva.md（WebApp本体）
 - Knowledge/hitl-blinding-and-confound-design.md（盲検設計）
+
+## 追記 (2026-10-10)
+- 出典: Experimental_record/20261010.md
+- 共有 Basic 認証は**パイロット時の短いパスワードのまま本番に入りやすい**。トンネル URL さえ知られれば医用画像まで閲覧できるので、本番前に長いランダム文字列へ替えてから再起動する。
+- quick tunnel では再起動のたびに URL が変わる。パスワードを替えたら、配布リンクも作り直して送り直す必要がある。個人トークン方式(`Knowledge/bind-participant-identity-server-side-token-url.md`)ならトークンは不変なので、base URL を差し替えて再生成するだけで済む。
+- パスワードは配布リンクのメモ(`annotator_links.md`)とは別経路で伝える。リンクとパスワードを同じ場所に置くと、そのメモ 1 つで本人として記録できてしまう。
