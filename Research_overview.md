@@ -1,5 +1,5 @@
 # 研究進捗 Overview
-- last_updated: 2026-10-10
+- last_updated: 2026-10-13
 
 ## 研究概要
 眼瞼（Eyelid/Caruncle）および虹彩・瞳孔（Iris/Pupil）のセグメンテーションを対象に、
@@ -268,7 +268,9 @@ STUDY backend は torch 無しの JSON lookup へ、`app.js` は 2 行で混合�
 続けて(20:46 JST)ユーザー「**中心や半径など別の metric では、既報の円・楕円近似は何を基準に精度を決めているか**」に対し、既報の流儀を分野別に整理して回答した(説明のみ・コード変更なし): 虹彩認識は NICE の E1/E2(マスク流儀)+ 円近似時代の**中心座標誤差・半径誤差(px)**、瞳孔検出は**中心ユークリッド誤差と「≤ 5 px の割合」**(楕円評価は楕円 IoU + 軸長・回転角)、眼科臨床は中心ずれ・径誤差(mm)の **Bland–Altman・ICC** と **MRD1/MRD2/PFH(mm、±0.5 mm 以内の割合)**、px→mm は HVID(≈11.7 mm)換算。本研究への含意: 主指標 ASSD は動かさず、虹彩・瞳孔に**中心誤差・長軸/短軸誤差・回転角誤差・楕円 IoU**、画像単位に **MRD1/MRD2/PFH(px と HVID 換算 mm)** を副次指標として追加する案(提案側にも対称に付与)を提示 → **「追加しますか?」でユーザー回答待ち**。虹彩の ASSD 残差 3 px の大半は隠れ側(上下方向)半径の解釈差の可能性が高く、この分解で δ_iris の決め方と一括で判断する。サーバ `blc590ed3` 起動継続、全変更未コミット。
 続けて(20:55〜21:04 JST)ユーザー承認「**はい、追加してください**」を受け、**既報準拠の楕円パラメータ指標と臨床指標を採点に実装した**(主指標 ASSD・設計・割付順序は不変)。`scripts/webapp/backend/scoring.py` に `HVID_MM=11.7`・`ellipse_metrics()`(中心誤差 `center_err/_dx/_dy`・長軸/短軸半径誤差・**回転楕円の軸投影による水平/垂直径誤差** `hdiam_err/vdiam_err`・回転誤差)と `clinical_indices()`(眼瞼マスクの瞳孔中心列の上縁・下縁 → **MRD1/MRD2/PFH**、**mm 換算は GT 虹彩の水平径 = HVID 11.7 mm を提出側・GT 側で共通**に使い提出虹彩径の誤差を混入させない)を追加、`session.py` の `CSV_COLS`/`_flatten` に新列(提案側 `{k}_prop_center_err/_prop_major_err` を含む)を展開。MODEL 側 `export_study_proposals.py` にも `ELLIPSE_KEYS`・`met["clinical"]` を足して `proposals.json` を再エクスポート(**sha256 `b0268b2b…de86`**)、`experiment.json` を再生成(**`bcc841d9…deed`**、割付項目は不変)、旧サーバ `blc590ed3` を停止して **`b15yd84yc`** で再起動 → `verify_webapp_api.py` **ALL PASS**・新列の流入を確認。既存 test S1–S3 は新規 `scripts/analysis/rescore_records.py` で `records.jsonl` の図形から遡及再採点し `summary_rescored.csv` を並置、`fit_models.py` はそれを優先読込。**pilot 再採点の結果: 開発者手動 10 枚で虹彩中心誤差 4.6 px(SD 2.7)、水平径 +3.7 px / 垂直径 −0.2 px**(= 隠れ側の解釈差ではなく**見えている側を GT より大きく描く系統差**が虹彩 ASSD 残差 3〜5 px の主因)、瞳孔中心誤差 2.4 px、**|MRD1 誤差| 0.14 mm・|PFH 誤差| 0.07 mm**(臨床許容 ±0.5 mm を大きく下回る)、n=128 提案は虹彩中心 2.7 px・MRD1 −0.03 mm。`analysis_plan.md` §4・§5.3・§5.11 と OSF ドラフトの Measured variables・両ハッシュを更新。楕円 IoU は Dice と重複するので不採用、回転誤差は参考列。δ_iris の決め方(境界距離か中心+径か)は S4〜S6 後の inter-rater と一緒に決める(ユーザー判断待ち)。全変更未コミット。
 
-2026-10-10: 本番開始前に **ID 取り違えリスク**を点検(プルダウン選択・共通パスワード・初期値 `test`・localStorage 完了管理で、他人の割付で作業でき重複も検知不可)。個人トークン URL + サーバ側完了判定を推奨 → ユーザー承認(1+2)で**実装・検証完了**: `scripts/make_annotator_links.py` で個人トークン発行(`annotator_tokens.json`・git 管理外)、全 API で ident→名前を検証し他人名義の書込/削除は 403、プルダウンは `test` のみ、完了・試行回数は `outputs/results/` からサーバ判定(localStorage 非依存)。API 18 項目 PASS + Playwright 確認済み。やり直し機能は既存方針どおり残置。続けてユーザーがサーバを再起動し公開 URL(`chances-animal-voted-teacher.trycloudflare.com`)でリンクを生成、新コードで稼働していることを確認し、個人リンク一覧を `annotator_links.md`(リポジトリ直下・`.gitignore` で git 管理外)に保存。さらに開発者用リンク `?t=test`(`fit_models.py` で既定除外・解析対象外)を `annotator_links.md` と `make_annotator_links.py` の出力に追加。ログイン情報の質問を受け、共有 Basic 認証のパスワードが短く推測されやすいため、本番前に長いランダム文字列へ変更して再起動し、リンクも再生成するよう推奨した(ユーザー判断待ち)。さらにユーザー報告で、練習の模範解答(正解マスク)が右上「確認OK」直後の負荷アンケートに覆われ、読み込み前に押せば見ずに進めてしまう問題を修正: 練習時のみ画像下に「OK(模範解答を確認した)」ボタン(読み込み完了まで無効・その間「確認OK」は非表示)を出し、OK 後にアンケートへ進むようにした(フロントのみ・本番セッション不変・ポート 8011 + Playwright で確認・タブ再読み込みで反映)。残りは、パスワードの強化、公開 URL 経由での表示確認、本人への個別送付(全変更未コミット)。
+2026-10-10: 本番開始前に **ID 取り違えリスク**を点検(プルダウン選択・共通パスワード・初期値 `test`・localStorage 完了管理で、他人の割付で作業でき重複も検知不可)。個人トークン URL + サーバ側完了判定を推奨 → ユーザー承認(1+2)で**実装・検証完了**: `scripts/make_annotator_links.py` で個人トークン発行(`annotator_tokens.json`・git 管理外)、全 API で ident→名前を検証し他人名義の書込/削除は 403、プルダウンは `test` のみ、完了・試行回数は `outputs/results/` からサーバ判定(localStorage 非依存)。API 18 項目 PASS + Playwright 確認済み。やり直し機能は既存方針どおり残置。続けてユーザーがサーバを再起動し公開 URL(`chances-animal-voted-teacher.trycloudflare.com`)でリンクを生成、新コードで稼働していることを確認し、個人リンク一覧を `annotator_links.md`(リポジトリ直下・`.gitignore` で git 管理外)に保存。さらに開発者用リンク `?t=test`(`fit_models.py` で既定除外・解析対象外)を `annotator_links.md` と `make_annotator_links.py` の出力に追加。ログイン情報の質問を受け、共有 Basic 認証のパスワードが短く推測されやすいため、本番前に長いランダム文字列へ変更して再起動し、リンクも再生成するよう推奨した(ユーザー判断待ち)。さらにユーザー報告で、練習の模範解答(正解マスク)が右上「確認OK」直後の負荷アンケートに覆われ、読み込み前に押せば見ずに進めてしまう問題を修正: 練習時のみ画像下に「OK(模範解答を確認した)」ボタン(読み込み完了まで無効・その間「確認OK」は非表示)を出し、OK 後にアンケートへ進むようにした(フロントのみ・本番セッション不変・ポート 8011 + Playwright で確認・タブ再読み込みで反映)。残りは、パスワードの強化、公開 URL 経由での表示確認、本人への個別送付。
+
+2026-10-11: これらの変更と 09-15 以降の未コミット分(計 72 ファイル)を **`ce19d7a` として一括コミット**した(push なし)。コミット前に、機密パス・個人トークン文字列が含まれないことを機械的に確認した。`outputs/figures/` の PNG 3 枚は患者の眼の写真だったため除外し、未追跡のまま残している。続けて、久保田・改正・前田先生への依頼メール(練習 1・2 の後に返信を依頼、cc 福嶋先生)を、個人リンク入りの Gmail 下書き 3 通で作成した。宛先はユーザーが確定済み(改正 咲樹・前田 英俊・久保田 紘史先生、cc 福嶋 葉子先生)。お名前とアドレスは `annotator_links.md`(git 管理外)に記録した。ユーザーの指示で、名乗りを「大阪大学の北口です」に変え、本文を HTML にして段落の途中で改行が入らないようにした(テキスト形式では Gmail が自動で折り返していたため)。下書き 3 通はユーザーの送信待ち。
 
 ## マイルストーン
 - [x] データ所在・手動アノテ範囲の確定（2026-06-14, 前リポジトリ調査）
@@ -316,6 +318,9 @@ STUDY backend は torch 無しの JSON lookup へ、`app.js` は 2 行で混合�
 - [x] webapp 一式 + `annotator_guide.md` + 研究ノートの未コミット分を実施前に一括コミット(`a5951a0`・31ファイル。コミット前に `.gitignore` 除外維持と患者ファイル名/`.pth`/パスワード文字列の非混入を機械確認)(2026-09-15)
 - [x] GitHub へ push(`git push origin main` は自動モード分類器にブロック → ユーザーが `! git push origin main` を実行し `4716de3..a5951a0` を push 成功)(2026-09-15)
 - [ ] `run_server.ps1` の `$Pass` を本番パスワードへ変更(git 管理下のため変更はコミットしない)
+- [x] ID 取り違え対策・練習 OK ボタン + 09-15 以降の未コミット分を一括コミット(`ce19d7a`・72 ファイル、患者画像を含む `outputs/figures/` は除外)(2026-10-11)
+- [ ] `outputs/figures/`(患者画像を含む確認図)を `.gitignore` に追加するか判断(ユーザー判断待ち)
+- [ ] `ce19d7a` を GitHub へ push(ユーザーが `! git push origin main` を実行)
 - [x] 論文化リスクの対応状況を棚卸し(10件の表: ✅1 / ⚠️3 / ❌5 / ❓1)し、**開始前必須=事前解析計画書+アノテータ背景質問票(+倫理確認)**、他は後から補えると仕分けしてユーザーへ提示(2026-09-15)
 - [x] アノテータ背景調査票 `outputs/docs/annotator_questionnaire.md` を作成(作業前: 職種・経験・アノテ経験・GT 関与・操作環境・自己評価・実施予定 / 作業後: 疲労・描き直し・盲検の自己申告、計21問)。コミット `e131aff`(2026-09-15)
 - [x] `e131aff`(解析計画書・質問票)を GitHub へ push(ユーザー実行 `! git push origin main` → `a5951a0..e131aff`)(2026-09-15)
@@ -381,6 +386,12 @@ STUDY backend は torch 無しの JSON lookup へ、`app.js` は 2 行で混合�
 - [ ] 本番前に Basic 認証パスワード(`run_server.ps1` の `$Pass`)を長いランダム文字列へ変更して再起動し、新 URL でリンクを再生成
 - [ ] 公開 URL 経由で各リンクの本人名表示を確認し、各リンクを本人にだけ個別送付(annotator4〜6 は仮名のまま)
 - [x] 練習で模範解答が負荷アンケートに覆われる問題を修正(専用 OK ボタンで明示確認するまで進めない・本番不変・Playwright 確認) (2026-10-10)
+- [x] 久保田・改正・前田先生への依頼メール(練習 1・2 の後に返信依頼・cc 福嶋先生・個人リンク入り)を Gmail 下書き 3 通で作成 (2026-10-11)
+- [x] 依頼メールの宛先・お名前をユーザーが確定し、`annotator_links.md` に記録 (2026-10-11)
+- [x] 依頼メール下書きの体裁を修正(名乗り「大阪大学の北口です」・HTML で段落内改行なし・宛先とリンクを読み直しで確認) (2026-10-11)
+- [x] Gmail 下書きの「段落内で改行しない」規則(HTML の `<p>`)を claude-skills の `gmail-draft-attach` に反映して push(名乗りは個人情報のため除外) (2026-10-13)
+- [ ] 依頼メール 3 通の送信と、練習 1・2 の返信確認
+- [ ] 依頼メールの宛先(改正・前田先生は推定、福嶋先生は icloud/大学のどちらか)を確認して送信し、練習 1・2 の返信を待つ(その間サーバ・トンネルは起動したまま)
 
 ## タイムライン
 - 2026-06-15: HITLアノーテーションwebappを実装・検証、test 60枚割当を生成 -> [詳細](Experimental_record/20260615.md)
@@ -496,6 +507,11 @@ STUDY backend は torch 無しの JSON lookup へ、`app.js` は 2 行で混合�
 - 2026-10-10: 開発者用リンク `?t=test`(解析で既定除外を `fit_models.py:47` で確認)を `annotator_links.md` と `scripts/make_annotator_links.py` の出力に追加 -> [詳細](Experimental_record/20261010.md)
 - 2026-10-10: ログイン情報の質問に回答し、共有 Basic 認証のパスワードが推測されやすいと指摘。本番前に強化して再起動し、リンクを再生成するよう推奨(コード変更なし) -> [詳細](Experimental_record/20261010.md)
 - 2026-10-10: 練習で模範解答が負荷アンケートに覆われる問題を修正 → 練習時のみ「OK(模範解答を確認した)」ボタン(読み込み完了まで無効)を押すまで進めないようにし、本番は不変(`app.js`/`index.html`/`style.css`、8011 + Playwright で確認) -> [詳細](Experimental_record/20261010.md)
+- 2026-10-11: 10-10 の ID 取り違え対策・練習 OK ボタンと 09-15 以降の未コミット分(72 ファイル)を `ce19d7a` として一括コミット(push なし)。トークン文字列・機密パスの非混入を確認し、患者画像を含む `outputs/figures/` は除外 -> [詳細](Experimental_record/20261011.md)
+- 2026-10-11: 久保田・改正・前田先生への依頼メールを個人リンク入りの Gmail 下書き 3 通で作成(未送信)。パスワード表記を `hitl` に修正し、「時間も記録」の文言を速度教示を避けて「操作の記録」に変更。改正・前田先生の宛先は推定のため要確認 -> [詳細](Experimental_record/20261011.md)
+- 2026-10-11: ユーザーが宛先を確定(skaisho1998・maetoshi79 で OK)。下書きは修正不要と確認し、お名前・アドレスを `annotator_links.md`(git 管理外)とメモリに記録 -> [詳細](Experimental_record/20261011.md)
+- 2026-10-11: 依頼メール下書き 3 通を修正。名乗りを「大阪大学の北口です」に変え、本文を HTML(1 段落 = 1 つの `<p>`)にして Gmail の自動折り返しによる段落内改行をなくした(未送信) -> [詳細](Experimental_record/20261011.md)
+- 2026-10-13: 「段落内で改行しない」Gmail 下書きの規則を claude-skills の既存スキル `gmail-draft-attach` に反映(テキスト 1 行 → HTML の `<p>`、更新後に読み直す)して push(`8311c75`)。名乗りは個人名のため GitHub に入れずローカルメモリのみ -> [詳細](Experimental_record/20261013.md)
 
 ## 関連 Knowledge
 - [CVAT風HITLアノーテーションwebappの実装知見(追記: 削除は「範囲選択 > 単一頂点 > 図形」の 1 入口・修飾キー操作は状態連動パネルで常時露出・チュートリアルは純データ+被験者単位の既読キー・矢印キーは最も細かい選択単位に効かせポリゴン全体移動は廃止・セッション開始前の教示モーダルは計測前に await し文面は純データ)](Knowledge/hitl-annotation-webapp-konva.md)
@@ -532,12 +548,13 @@ STUDY backend は torch 無しの JSON lookup へ、`app.js` は 2 行で混合�
 - [チャットで URL を提示するときは直後に「)」「。」を続けない(リンク化で巻き込まれ 404 になる)](Knowledge/chat-url-trailing-punctuation-swallowed-into-link.md)
 - [ローカル配信の SPA を修正しても開きっぱなしのタブは古い JS を実行し続ける — 「修正の所在(サーバ/クライアント)」で切り分け、セッション開始などの節目に app_version を照合して自動リロードする](Knowledge/stale-frontend-after-server-fix-version-handshake-reload.md)
 - [AI 提案ポリゴンの「ギザギザ」はモデル出力解像度の問題(旧 SegFormer は低解像度ロジット補間が暗黙の平滑化) — 事前計算側で確率マップを Gaussian 平滑化してから二値化し、同一採点コードで ASSD/HD95 不変・折れ角改善を確認してから成果物とハッシュ連鎖を差し替える(表示側で平滑化しない・全条件一律・まつ毛等のモデル誤差は残す。追記: 研究者への説明はパイプライン段階+物理スケール+消えるもの/残るもの+σ の上限根拠(精度が動き始める直前)+構造別影響で組み立てる)](Knowledge/proposal-jaggedness-smooth-probability-map-before-threshold.md)
-- [作業時間が主要評価の被験者実験では、教示で速度に一切触れず精度目標だけを一貫して示す(「速さは競いません」も書かない・可視タイマーは暗黙の速度教示・精度目標は「縁を確認」でなく「ピクセル単位で模範解答」と到達点で書く。追記: タイマー非表示は計測を触らず CSS の body クラスで表示だけ切り、進捗は残し、説明資料の画面描写も同時更新。追記2: 教示文は効果量を動かす — pilot 前後比較で良い提案の仕上げ工数が約 2 倍になったので、版を本番前に確定し Methods に載せる)](Knowledge/timed-task-instructions-never-mention-speed.md)
+- [作業時間が主要評価の被験者実験では、教示で速度に一切触れず精度目標だけを一貫して示す(「速さは競いません」も書かない・可視タイマーは暗黙の速度教示・精度目標は「縁を確認」でなく「ピクセル単位で模範解答」と到達点で書く。追記: タイマー非表示は計測を触らず CSS の body クラスで表示だけ切り、進捗は残し、説明資料の画面描写も同時更新。追記2: 教示文は効果量を動かす — pilot 前後比較で良い提案の仕上げ工数が約 2 倍になったので、版を本番前に確定し Methods に載せる。追記3: 依頼メールなど研究者が後から書く文面にも「時間も記録」が再混入するので同じチェックを通す)](Knowledge/timed-task-instructions-never-mention-speed.md)
 - [pilot データが数十件たまったら「事前登録の検出力が仮定した分散・効果量」を実測値に置き換えて再計算する(本解析と同じ式で残差 SD・傾きを実測し、効果は実測の 1/2〜1/4 でも検出できるかを見る・構造別に判定してマージン規則を登録前に決める・探索実行は登録用 CSV を上書きしないよう出力先を分ける。追記: 復元は登録値との突き合わせで閉じ、実測は計画書の検出力段落に「パイロット実測」として追加し固定パラメータ・版番号は触らない)](Knowledge/pilot-variance-recheck-of-preregistered-power.md)
 - [円・楕円で表す構造(虹彩・瞳孔)の精度は、マスク流儀の境界距離だけでなく既報が使う「中心誤差・径誤差(・楕円 IoU)」と臨床量(MRD1/MRD2/PFH の mm)を副次に併記する(主指標は動かさず副次に限定・隠れ側半径の解釈差を分解・提案側にも対称付与・図形そのものを保存して遡及採点可能に・δ_k の定義指標と一括で決める)](Knowledge/ellipse-structure-accuracy-report-center-radius-alongside-boundary-metrics.md)
 - [採点指標を後から足したら、保存済みの図形(records.jsonl)から現行コードで再採点し `summary_rescored.csv` を並置する(集計 CSV は触らず解析側が優先読込・提案側にも同指標を同梱してハッシュ連鎖を更新・既知量ずらしのスモークテスト後に再起動)](Knowledge/retroactive-rescoring-from-stored-geometry-when-metrics-added.md)
 - [参加者 ID は選ばせずサーバ側で束縛する(追記: リンク一覧メモも資格情報として即 gitignore・ident を 1 箇所で解決し全 API に適用・保存は名前・トークン不変の再生成・個人トークン URL + サーバ側完了判定・初期値 test の静かな取り違え・localStorage 完了管理では重複を検知できない)](Knowledge/bind-participant-identity-server-side-token-url.md)
 - [練習のフィードバック(模範解答)は明示 OK で確認するまで次へ進ませない(OK は読み込み完了まで無効・既存の進行ボタンは隠す・再提出でゲート再設定・取得失敗はフェイルオープン・本番の流れは不変)](Knowledge/feedback-display-gate-progression-explicit-ack.md)
+- [Gmail 下書きはテキスト形式だと段落内に改行が入るので、HTML で 1 段落 = 1 つの `<p>` にする(`<br>` は見出し・URL・ID/PASS・箇条書きだけ・更新後は詳細形式で宛先とリンクを読み直す)](Knowledge/gmail-draft-plain-text-hard-wrap-use-html.md)
 
 ## 関連リソース
 - 計画: `PLAN.md`
