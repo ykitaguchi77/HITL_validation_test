@@ -37,3 +37,7 @@ outputs/models/*.pth
 # --- OS / editor ---
 .DS_Store
 Thumbs.db
+
+# --- Notes containing annotators' real names / email addresses (PII) ---
+Experimental_record/20261011.md
+Research_overview.md
